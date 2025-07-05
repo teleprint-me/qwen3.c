@@ -26,14 +26,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from jinja2 import Template
 from torch import nn
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from qwen3.model import ModelArgs, Transformer
-
-import json
-from jinja2 import Template
-
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # -----------------------------------------------------------------------------
 # common utilities
