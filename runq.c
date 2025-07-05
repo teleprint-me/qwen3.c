@@ -19,7 +19,7 @@
 
 // ----------------------------------------------------------------------------
 // Globals
-int GS = 0; // group size global for quantization of the weights
+int GS = 1; // group size global for quantization of the weights
 
 // ----------------------------------------------------------------------------
 // Transformer model
