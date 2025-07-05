@@ -121,7 +121,8 @@ python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots
 
 ## Build the inference engine
 
-The inference engine uses a single-threaded model for simplicity. This means it's very slow - even at Q8.
+The inference engine uses a single-threaded model for simplicity.
+This means it's very slow - even at Q8.
 I plan on modding the implementation to support posix multi-threading for the matmuls later on.
 For now, it is what it is.
 
@@ -150,13 +151,16 @@ gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 
 ## Inference the model
 
-To view help, simply run the binary.
+To view help, run the binary.
 
 ```sh
 ./runq
 ```
 
+You can configure model settings via the command line. Settings include a system prompt, setting temperature, sampling parameters and so forth.
+
 To run inference, we need to use a few flags from the help output.
+
 The inference engine supports both completions and chat completions via a mode parameter.
 For completions, use one of two keywords for the `-m` flag: `generate` or `chat` (default).
 
@@ -176,12 +180,12 @@ Fun things you can try asking:
 
 > Translate into English: 我希望您喜欢使用 qwen3.c 学习 LLM。
 
-## Step 4: experiment with reasoning mode
+## Experiment with reasoning mode
 
 qwen3.c also supports reasoning/thinking, if the model used supports it. Enable thinking with the `-r 1` command line parameter:
 
 ```aiignore
-./runq Qwen3-4B.bin -r 1
+./runq model/Qwen3-4B-Q8.bin -r 1
 ```
 
 Then try:
@@ -190,28 +194,19 @@ Then try:
 
 > What is 19673261 * 1842.64?
 
-## Step 5: explore other models
+## Explore other models
 
 Try for example DeepSeek-R1-0528-Qwen3-8B:
 
-```aiignore
-git clone https://huggingface.co/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
-python export.py DeepSeek-R1-0528-Qwen3-8B.bin ./DeepSeek-R1-0528-Qwen3-8B
+```sh
+huggingface-cli download deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --cache-dir model
+python -m qwen3 model/DeepSeek-R1-0528-Qwen3-8B-Q8.bin model/<model-dir-path>
 ```
 
 Then:
 
-```aiignore
-./runq DeepSeek-R1-0528-Qwen3-8B.bin
-```
-
-## Advanced options
-
-qwen3.c lets you configure model settings via the command line including setting a system prompt, setting temperature, sampling parameters and so forth.
-To show available settings, run qwen3.c without any command-line parameters:
-
-```aiignore
-./runq
+```sh
+./runq model/DeepSeek-R1-0528-Qwen3-8B-Q8.bin
 ```
 
 ## License
