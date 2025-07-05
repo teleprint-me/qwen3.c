@@ -400,7 +400,9 @@ float *forward(Transformer *transformer, int token, int pos) {
         float *gq = w->q_ln_weights + l * p->head_dim;   // 128 floats
         float *gk = w->k_ln_weights + l * p->head_dim;   // 128 floats
 
-        /* ------------ Q-RMSNorm + rotate each query head ------------- */
+        /**
+         * Q-RMSNorm + rotate each query head
+         */
         for (int h = 0; h < p->n_heads; h++) {
             float *q = s->q + h * p->head_dim;
 
@@ -408,7 +410,9 @@ float *forward(Transformer *transformer, int token, int pos) {
             rotary(q, p->head_dim, pos);
         }
 
-        /* ------------ K-RMSNorm + rotate each key head ------------ */
+        /**
+         * K-RMSNorm + rotate each key head
+         */
         for (int h = 0; h < p->n_kv_heads; h++) {
             float *k = s->k + h * p->head_dim;
 
@@ -416,7 +420,9 @@ float *forward(Transformer *transformer, int token, int pos) {
             rotary(k, p->head_dim, pos);
         }
 
-        // multihead attention. iterate over all heads
+        /** 
+         * Multi-headed attention
+         */
         #pragma omp parallel for
         for (int h = 0; h < p->n_heads; h++) {
             // get the query vector for this head
