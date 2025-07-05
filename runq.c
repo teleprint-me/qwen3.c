@@ -346,6 +346,22 @@ void matmul(float *xout, QuantizedTensor *x, QuantizedTensor *w, int n, int d) {
     }
 }
 
+void rotary(Config* p, float* t, int pos) {
+    // Apply rotary embedding for computing frequencies
+    #pragma omp parallel for
+    for (int j = 0; j < p->head_dim/2; j++) {
+        float freq = powf(1e6, -(float)j / (p->head_dim/2));
+        float cos_freq = cosf(pos * freq);
+        float sin_freq = sinf(pos * freq);
+
+        float x = t[j]; // real part
+        float y = t[j + p->head_dim/2]; // imag part
+
+        t[j] = x * cos_freq - y * sin_freq; // new real
+        t[j + p->head_dim/2] = x * sin_freq + y * cos_freq; // new imag
+    }
+}
+
 float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
     Config *p = &transformer->config;
