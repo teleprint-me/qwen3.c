@@ -24,7 +24,7 @@ int GS = 0; // group size global for quantization of the weights
 // ----------------------------------------------------------------------------
 // Transformer model
 
-typedef struct {
+typedef struct Config {
     int magic_number; // checkpoint magic number
     int version; // file format version
     int dim; // transformer dimension
@@ -39,12 +39,12 @@ typedef struct {
     int group_size; // quantization group size (export.py uses 64)
 } Config;
 
-typedef struct {
+typedef struct QuantizedTensor {
     int8_t *q;    // quantized values
     float *s; // scaling factors
 } QuantizedTensor;
 
-typedef struct {
+typedef struct TransformerWeights {
     // token embedding table
     QuantizedTensor *q_tokens; // (vocab_size, dim)
     float *token_embedding_table; // same, but dequantized
@@ -69,7 +69,7 @@ typedef struct {
     QuantizedTensor *wcls;
 } TransformerWeights;
 
-typedef struct {
+typedef struct RunState {
     // current wave of activations
     float *x; // activation at current time stamp (dim,)
     float *xb; // same, but inside a residual branch (dim,)
@@ -88,7 +88,7 @@ typedef struct {
     float *value_cache; // (layer, seq_len, dim)
 } RunState;
 
-typedef struct {
+typedef struct Transformer {
     Config config; // the hyperparameters of the architecture (the blueprint)
     TransformerWeights weights; // the weights of the model
     RunState state; // buffers for the "wave" of activations in the forward pass
