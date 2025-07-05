@@ -290,7 +290,7 @@ void free_transformer(Transformer *t) {
 void rmsnorm(float *o, float *x, float *weight, int size) {
     // calculate sum of squares
     float sos = 0;
-    #pragma omp parallel for
+    #pragma omp parallel for reduction(+:sos)
     for (int j = 0; j < size; j++) {
         sos += x[j] * x[j];
     }
