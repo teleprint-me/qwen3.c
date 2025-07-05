@@ -346,19 +346,19 @@ void matmul(float *xout, QuantizedTensor *x, QuantizedTensor *w, int n, int d) {
     }
 }
 
-void rotary(Config* p, float* t, int pos) {
-    // Apply rotary embedding for computing frequencies
+void rotary(float* t, int head_dim, int pos) {
+    int half_dim = head_dim / 2;
+
     #pragma omp parallel for
-    for (int j = 0; j < p->head_dim/2; j++) {
-        float freq = powf(1e6, -(float)j / (p->head_dim/2));
-        float cos_freq = cosf(pos * freq);
-        float sin_freq = sinf(pos * freq);
+    for (int i = 0; i < half_dim; i++) {
+        float angle = pos * powf(1e6f, -(float)i / half_dim);
+        float cos_a = cosf(angle), sin_a = sinf(angle);
 
-        float x = t[j]; // real part
-        float y = t[j + p->head_dim/2]; // imag part
+        float real = t[i];
+        float imag = t[i + half_dim];
 
-        t[j] = x * cos_freq - y * sin_freq; // new real
-        t[j + p->head_dim/2] = x * sin_freq + y * cos_freq; // new imag
+        t[i]            = real * cos_a - imag * sin_a;
+        t[i + half_dim] = real * sin_a + imag * cos_a;
     }
 }
 
@@ -404,18 +404,7 @@ float *forward(Transformer *transformer, int token, int pos) {
             float *q = s->q + h * p->head_dim;
 
             rmsnorm(q, q, gq, p->head_dim);
-            // compute frequencies
-            for (int j = 0; j < p->head_dim/2; j++) {
-                float freq = powf(1e6, -(float)j / (p->head_dim/2));
-                float cos_freq = cosf(pos * freq);
-                float sin_freq = sinf(pos * freq);
-
-                float x = q[j]; // real part
-                float y = q[j + p->head_dim/2]; // imag part
-
-                q[j] = x * cos_freq - y * sin_freq; // new real
-                q[j + p->head_dim/2] = x * sin_freq + y * cos_freq; // new imag
-            }
+            rotary(q, p->head_dim, pos);
         }
 
         /* ------------ K-RMSNorm + rotate each key head ------------ */
@@ -423,18 +412,7 @@ float *forward(Transformer *transformer, int token, int pos) {
             float *k = s->k + h * p->head_dim;
 
             rmsnorm(k, k, gk, p->head_dim);
-            // compute frequencies
-            for (int j = 0; j < p->head_dim/2; j++) {
-                float freq = powf(1e6, -(float)j / (p->head_dim/2));
-                float cos_freq = cosf(pos * freq);
-                float sin_freq = sinf(pos * freq);
-
-                float x = k[j];
-                float y = k[j + p->head_dim/2];
-
-                k[j] = x * cos_freq - y * sin_freq;
-                k[j + p->head_dim/2] = x * sin_freq + y * cos_freq;
-            }
+            rotary(k, p->head_dim, pos);
         }
 
         // multihead attention. iterate over all heads
