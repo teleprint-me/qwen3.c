@@ -135,7 +135,7 @@ def model_export(model, output_file, group_size=64):
         p.max_seq_len,
         p.head_dim,
         int(shared_classifier),
-        group_size
+        group_size,
     )
     out_file.write(header)
 
@@ -153,9 +153,23 @@ def model_export(model, output_file, group_size=64):
 
     # write out the QK-LayerNorm weights (Qwen3)
     for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.lq.weight if layer.attention.lq.weight is not None else torch.ones(model.params.head_dim))
+        serialize_fp32(
+            out_file,
+            (
+                layer.attention.lq.weight
+                if layer.attention.lq.weight is not None
+                else torch.ones(model.params.head_dim)
+            ),
+        )
     for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.lk.weight if layer.attention.lk.weight is not None else torch.ones(model.params.head_dim))
+        serialize_fp32(
+            out_file,
+            (
+                layer.attention.lk.weight
+                if layer.attention.lk.weight is not None
+                else torch.ones(model.params.head_dim)
+            ),
+        )
 
     # now let's write out all the params that we are quantizing to Q8_0
     # note we skip classifier weights, which are shared with the embedding
@@ -180,7 +194,9 @@ def model_export(model, output_file, group_size=64):
     out_file.close()
     print(f"Written model checkpoint to {output_file}")
 
+
 ## Tokenizer functions
+
 
 def bytes_to_unicode():
     """Reference GPT-2 byte→Unicode map."""
@@ -196,11 +212,12 @@ def bytes_to_unicode():
             n += 1
     return dict(zip(bs, map(chr, cs)))
 
+
 def internal_to_bytes(U2B, token_str: str) -> bytes:
-    return b''.join(
-        bytes([U2B[ch]]) if ch in U2B else ch.encode('utf-8')
-        for ch in token_str
+    return b"".join(
+        bytes([U2B[ch]]) if ch in U2B else ch.encode("utf-8") for ch in token_str
     )
+
 
 def build_tokenizer(model, file):
     # Build the reverse table once
@@ -226,7 +243,10 @@ def build_tokenizer(model, file):
     merges = tokenizer_data["model"]["merges"]
 
     # Build merge rank table
-    merge_rank = {''.join(tuple(merge if isinstance(merge, list) else merge.split())): i for i, merge in enumerate(merges)}
+    merge_rank = {
+        "".join(tuple(merge if isinstance(merge, list) else merge.split())): i
+        for i, merge in enumerate(merges)
+    }
 
     # Create pseudo-score dictionary
     # Tokens from initial vocab get score 0 (unmerged tokens)
@@ -253,11 +273,12 @@ def build_tokenizer(model, file):
 
         for id, token in enumerate(all_tokens):
             token_bytes = internal_to_bytes(U2B, token)
-            out_f.write(struct.pack("f", pseudo_scores[token])) # merge score
-            out_f.write(struct.pack("<I", len(token_bytes))) # 4 bytes: token length
-            out_f.write(token_bytes)                         # UTF-8 bytes
+            out_f.write(struct.pack("f", pseudo_scores[token]))  # merge score
+            out_f.write(struct.pack("<I", len(token_bytes)))  # 4 bytes: token length
+            out_f.write(token_bytes)  # UTF-8 bytes
 
     print(f"Written tokenizer model to {file}.tokenizer")
+
 
 def build_prompts(model, file):
     # Compile the template
@@ -265,32 +286,38 @@ def build_prompts(model, file):
 
     # Render the templates and write out the prompts
 
-    messages = [
-        {"role": "user", "content": "%s"}
-    ]
+    messages = [{"role": "user", "content": "%s"}]
 
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=False)
-    with open(file + '.template', 'w', encoding='utf-8', newline='') as f:
+    rendered_prompt = template.render(
+        messages=messages, add_generation_prompt=True, enable_thinking=False
+    )
+    with open(file + ".template", "w", encoding="utf-8", newline="") as f:
         f.write(rendered_prompt)
 
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=True)
-    with open(file + '.template.with-thinking', 'w', encoding='utf-8', newline='') as f:
+    rendered_prompt = template.render(
+        messages=messages, add_generation_prompt=True, enable_thinking=True
+    )
+    with open(file + ".template.with-thinking", "w", encoding="utf-8", newline="") as f:
         f.write(rendered_prompt)
 
-    messages = [
-        {"role": "system", "content": "%s"},
-        {"role": "user", "content": "%s"}
-    ]
+    messages = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
 
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=False)
-    with open(file + '.template.with-system', 'w', encoding='utf-8', newline='') as f:
+    rendered_prompt = template.render(
+        messages=messages, add_generation_prompt=True, enable_thinking=False
+    )
+    with open(file + ".template.with-system", "w", encoding="utf-8", newline="") as f:
         f.write(rendered_prompt)
 
-    rendered_prompt = template.render(messages=messages, add_generation_prompt=True, enable_thinking=True)
-    with open(file + '.template.with-system-and-thinking', 'w', encoding='utf-8', newline='') as f:
+    rendered_prompt = template.render(
+        messages=messages, add_generation_prompt=True, enable_thinking=True
+    )
+    with open(
+        file + ".template.with-system-and-thinking", "w", encoding="utf-8", newline=""
+    ) as f:
         f.write(rendered_prompt)
 
     print(f"Written prompt templates to {file}.template.*")
+
 
 # -----------------------------------------------------------------------------
 # Load / import functions
@@ -304,7 +331,7 @@ def load_model(input_dir):
     # convert config to ModelArgs
     config = ModelArgs()
 
-    with open(os.path.join(input_dir, 'config.json'), 'r') as f:
+    with open(os.path.join(input_dir, "config.json"), "r") as f:
         config_json = json.load(f)
 
     config.dim = config_json["hidden_size"]
@@ -338,7 +365,7 @@ def load_model(input_dir):
             state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
         )
         layer.attention.wk.weight = nn.Parameter(
-            state_dict[f'model.layers.{i}.self_attn.k_proj.weight']
+            state_dict[f"model.layers.{i}.self_attn.k_proj.weight"]
         )
         layer.attention.wv.weight = nn.Parameter(
             state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
