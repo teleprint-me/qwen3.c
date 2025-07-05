@@ -346,6 +346,7 @@ void matmul(float *xout, QuantizedTensor *x, QuantizedTensor *w, int n, int d) {
     }
 }
 
+/// @todo Add precomputed rotary cache.
 void rotary(float* t, int head_dim, int pos) {
     int half_dim = head_dim / 2;
 
