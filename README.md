@@ -103,55 +103,61 @@ python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots
 
 ## Build the Inference Engine
 
-The inference engine is single-threaded by default.
-OpenMP support must be explicitly enabled (see below).
-It works, but it's **slow**, even with Q8 quantization.
-POSIX threading support is planned.
+The inference engine is **single-threaded by default**.
+OpenMP support can be enabled to utilize multiple CPU cores and speed up inference.
+Note that even with Q8 quantization, performance is still limited.
+Support for POSIX threads is planned for future versions.
 
-### Default Make
+### Build Options
+
+#### Default (no OpenMP)
 
 ```sh
-make
+make run
 ```
 
-### Use OpenMP
+#### With OpenMP
 
 ```sh
 make openmp
 ```
 
-### Use GCC (manually)
+#### Manual GCC Build (OpenMP + Optimizations)
 
 ```sh
 make gnu
 ```
 
-Or directly:
+Or manually:
 
 ```sh
 gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 ```
 
-### Enable multi-threading
+### Enable Multi-threading via OpenMP
 
-You can export the number of threads to the environment.
+By default, OpenMP uses only **one thread** unless specified.
+
+You can set the number of threads using the `OMP_NUM_THREADS` environment variable.
+
+#### Option 1: Export Once
 
 ```sh
-OMP_NUM_THREADS=$(nproc)
-export OMP_NUM_THREADS
+export OMP_NUM_THREADS=$(nproc)
 ./runq model/Qwen3-1.7B-Q8.bin
 ```
 
-Or you can prefix this when running the binary.
+> This sets it for the current shell session and all subsequent runs.
+
+#### Option 2: Inline Per Run
 
 ```sh
 OMP_NUM_THREADS=$(nproc) ./runq model/Qwen3-1.7B-Q8.bin
 ```
 
-Note that the latter is required everytime the program is run.
-The former is only needed one and we can run the binary on its own.
+> This method is **one-shot** — it applies only to the current invocation.
 
-See [readthedocs](https://curc.readthedocs.io/en/latest/programming/OpenMP-C.html) for more details.
+For more details on using OpenMP with C, see the [OpenMP programming guide](https://curc.readthedocs.io/en/latest/programming/OpenMP-C.html).
 
 ## Run Inference
 
