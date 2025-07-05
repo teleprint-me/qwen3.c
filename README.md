@@ -21,44 +21,147 @@ enjoy running leading Qwen3-architecture LLMs on standard hardware (no GPUs need
 qwen3.c includes a Python tool to process any Qwen3-architecture HuggingFace model, converting to qwen3.c's model format which uses Q8_0 quantization for a good trade-off between quality
 and performance.
 
-## Step 1: checkout and build
+## Clone the repo
 
-First, checkout this repo and build it. I recommend the OpenMP version if your toolchain supports it, as it supports multiple CPU
-cores for dramatically improved performance:
+```sh
+git clone https://github.com/teleprint-me/qwen3.c qwen3
+cd qwen3
+```
 
-```aiignore
-git clone https://github.com/adriancable/qwen3.c
-cd qwen3.c
+## Setup the environment
+
+### Create a virtual environment
+
+```sh
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### Install PyTorch
+
+We only need the CPU version to convert the model in later steps.
+
+```sh
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+_**NOTE:** This step must be completed **before** installing dependencies._
+
+### Install dependencies
+
+I removed the original versioning in the requirements.txt file so it's not bound.
+
+```sh
+pip install -r requirements.txt --upgrade 
+```
+
+For the frozen versioning, use `requirements.dev.txt` and omit the `--upgrade` flag.
+
+```sh
+pip install -r requirements.dev.txt
+```
+
+Only use one of these methods. Not both. Otherwise, you'll run into conflicts.
+
+## Download the model
+
+_**You can skip this step if you already have the original model files.**_
+
+You'll need `huggingface-cli` to download the model. You'll need HuggingFace credentials for this step.
+
+```sh
+huggingface-cli login
+```
+
+Follow the prompts.
+
+```sh
+huggingface-cli whoami
+```
+
+Should output:
+
+```sh
+<user-name>
+orgs: <org-name>
+```
+
+Create a local directory for the model files.
+
+```sh
+mkdir model
+```
+
+We need the physical directory with the actual files, so we need to specify the cache path.
+
+```sh
+huggingface-cli download Qwen/Qwen3-1.7B --cache-dir model
+```
+
+_Note that the 4B parameter model is preferred because it is more resiliant to quantization._
+_The smaller models will suffer due to loss of precision which causes loss of coherency._
+_This means that 1.7B is probably the smallest we can go without damaging the model._
+
+It will take some time to download the model file. Time varies and will depend on your internet bandwidth.
+
+## Convert the model
+
+The model files are hashed (also just what it is), so we need to dig up the links to map the files.
+
+```sh
+model/models--Qwen--Qwen3-1.7B/snapshots/<UUID-DIR-PATH>
+```
+
+The export script loads the model file into memory using PyTorch and will take up a considerable amount of memory.
+You will need a minimum of 32GB of CPU RAM to convert the model file. The 1.6B model may consume up to ~25.6GB of CPU RAM.
+
+```sh
+python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots/<UUID-DIR-PATH>
+```
+
+## Build the inference engine
+
+The inference engine uses a single-threaded model for simplicity. This means it's very slow - even at Q8.
+I plan on modding the implementation to support posix multi-threading for the matmuls later on.
+For now, it is what it is.
+
+```sh
+make
+```
+
+To optimize the binary for faster inference, the [author of this repo](https://github.com/adriancable/qwen3.c)
+recommends compiling with openmp.
+
+```sh
 make openmp
 ```
 
-(To build without OpenMP, just run `make` without the `openmp` argument.)
+I just build with `gcc`. The original author set it so it uses openmp.
 
-## Step 2: download and convert a model
-
-First, make sure `git` is set up with your HuggingFace credentials (now is a great time to create a
-HuggingFace account if you don't have one).
-
-Then, download any dense (no Mixture-of-Experts) unquantized (not GGUF) Qwen3-architecture model from HuggingFace.
-Unless you have lots of RAM, start with smaller models.
-
-Qwen3-4B is a great starting point:
-
-```aiignore
-git clone https://huggingface.co/Qwen/Qwen3-4B
+```sh
+make gnu
 ```
 
-Then run the Python 3 export tool (will take around 10 minutes) to convert to qwen3.c's quantized checkpoint format, storing in
-a file called `Qwen3-4B.bin`:
+The manual build command is just a one-liner that enables compiler optimizations.
 
-```aiignore
-python export.py Qwen3-4B.bin ./Qwen3-4B
+```sh
+gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 ```
 
-## Step 3: run and enjoy
+## Inference the model
 
-```aiignore
-./runq Qwen3-4B.bin
+To view help, simply run the binary.
+
+```sh
+./runq
+```
+
+To run inference, we need to use a few flags from the help output.
+The inference engine supports both completions and chat completions via a mode parameter.
+For completions, use one of two keywords for the `-m` flag: `generate` or `chat` (default).
+
+```sh
+./runq model/Qwen3-1.7B-Q8.bin -m 'generate' -i 'Once upon a time'
 ```
 
 Fun things you can try asking:
