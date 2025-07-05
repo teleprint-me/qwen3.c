@@ -387,7 +387,8 @@ float *forward(Transformer *transformer, int token, int pos) {
             rmsnorm(q, q, gq, p->head_dim);
             for (int j = 0; j < p->head_dim/2; j++) {
                 float freq = powf(1e6, -(float)j / (p->head_dim/2));
-                float cos_freq = cosf(pos * freq), sin_freq = sinf(pos * freq);
+                float cos_freq = cosf(pos * freq);
+                float sin_freq = sinf(pos * freq);
 
                 float x = q[j]; // real part
                 float y = q[j + p->head_dim/2]; // imag part
