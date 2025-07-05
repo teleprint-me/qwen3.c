@@ -131,6 +131,27 @@ Or directly:
 gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 ```
 
+### Enable multi-threading
+
+You can export the number of threads to the environment.
+
+```sh
+OMP_NUM_THREADS=$(nproc)
+export OMP_NUM_THREADS
+./runq model/Qwen3-1.7B-Q8.bin
+```
+
+Or you can prefix this when running the binary.
+
+```sh
+OMP_NUM_THREADS=$(nproc) ./runq model/Qwen3-1.7B-Q8.bin
+```
+
+Note that the latter is required everytime the program is run.
+The former is only needed one and we can run the binary on its own.
+
+See [readthedocs](https://curc.readthedocs.io/en/latest/programming/OpenMP-C.html) for more details.
+
 ## Run Inference
 
 ### View Help
