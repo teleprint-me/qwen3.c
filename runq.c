@@ -44,6 +44,9 @@ typedef struct QuantizedTensor {
     float *s; // scaling factors
 } QuantizedTensor;
 
+/// @note Many of these are arrays of pointers, one per layer.
+///       So memory layout looks like:
+///           weights.wq[layer] → QuantizedTensor {q, s}
 typedef struct TransformerWeights {
     // token embedding table
     QuantizedTensor *q_tokens; // (vocab_size, dim)
@@ -59,7 +62,7 @@ typedef struct TransformerWeights {
     // QK-RMSNorm for Qwen3
     float *q_ln_weights;
     float *k_ln_weights;
-    // weights for ffn
+    // weights for ffn (gate, down, up)
     QuantizedTensor *w1; // (layer, hidden_dim, dim)
     QuantizedTensor *w2; // (layer, dim, hidden_dim)
     QuantizedTensor *w3; // (layer, hidden_dim, dim)
