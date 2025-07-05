@@ -289,15 +289,19 @@ void free_transformer(Transformer *t) {
 
 void rmsnorm(float *o, float *x, float *weight, int size) {
     // calculate sum of squares
-    float ss = 0;
-    for (int j = 0; j < size; j++)
-        ss += x[j] * x[j];
+    float sos = 0;
+    #pragma omp parallel for
+    for (int j = 0; j < size; j++) {
+        sos += x[j] * x[j];
+    }
 
-    ss = 1.0f / sqrtf((ss / size) + 1e-6f);
+    sos = 1.0f / sqrtf((sos / size) + 1e-6f);
 
     // normalize and scale
-    for (int j = 0; j < size; j++)
-        o[j] = weight[j] * (ss * x[j]);
+    #pragma omp parallel for
+    for (int j = 0; j < size; j++) {
+        o[j] = weight[j] * (sos * x[j]);
+    }
 }
 
 void softmax(float *x, int size) {
