@@ -21,191 +21,160 @@ enjoy running leading Qwen3-architecture LLMs on standard hardware (no GPUs need
 qwen3.c includes a Python tool to process any Qwen3-architecture HuggingFace model, converting to qwen3.c's model format which uses Q8_0 quantization for a good trade-off between quality
 and performance.
 
-## Clone the repo
+## Clone the Repository
 
 ```sh
 git clone https://github.com/teleprint-me/qwen3.c qwen3
 cd qwen3
 ```
 
-## Setup the environment
+## Setup the Environment
 
-### Create a virtual environment
+### 1. Create and Activate Virtual Environment
 
 ```sh
 python -m venv .venv
 source .venv/bin/activate
 ```
 
-### Install PyTorch
+### 2. Install PyTorch (CPU-only)
 
-We only need the CPU version to convert the model in later steps.
+> Must be installed **before** other dependencies.
 
 ```sh
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-_**NOTE:** This step must be completed **before** installing dependencies._
+### 3. Install Python Dependencies
 
-### Install dependencies
+* For latest package versions:
 
-I removed the original versioning in the requirements.txt file so it's not bound.
+  ```sh
+  pip install -r requirements.txt --upgrade
+  ```
 
-```sh
-pip install -r requirements.txt --upgrade 
-```
+* For pinned versions (reproducible builds):
 
-For the frozen versioning, use `requirements.dev.txt` and omit the `--upgrade` flag.
+  ```sh
+  pip install -r requirements.dev.txt
+  ```
 
-```sh
-pip install -r requirements.dev.txt
-```
+> ⚠️ **Do not install both** — this may cause dependency conflicts.
 
-⚠️ **Do not install both** — it will cause dependency conflicts.
+## Download the Model
 
-## Download the model
+Skip this step if you already have the original HuggingFace model files.
 
-_**You can skip this step if you already have the original model files.**_
-
-You'll need `huggingface-cli` to download the model. You'll need HuggingFace credentials for this step.
+### 1. Login to HuggingFace
 
 ```sh
+pip install huggingface_hub
 huggingface-cli login
 ```
 
-Follow the prompts.
+Follow the prompts, then verify with:
 
 ```sh
 huggingface-cli whoami
 ```
 
-Should output:
-
-```sh
-<user-name>
-orgs: <org-name>
-```
-
-Create a local directory for the model files.
+### 2. Download Model
 
 ```sh
 mkdir model
-```
-
-We need the physical directory with the actual files, so we need to specify the cache path.
-
-```sh
 huggingface-cli download Qwen/Qwen3-1.7B --cache-dir model
 ```
 
-_Note that the 4B parameter model is preferred because it is more resiliant to quantization._
-_The smaller models will suffer due to loss of precision which causes loss of coherency._
-_This means that 1.7B is probably the smallest we can go without damaging the model._
+> ℹ️ The 4B model is **preferred** for quantization — smaller models (like 1.7B) may suffer significant degradation in coherency due to loss of precision.
 
-It will take some time to download the model file. Time varies and will depend on your internet bandwidth.
+## Convert the Model
 
-## Convert the model
+The downloaded HuggingFace models are stored under a hashed directory path:
 
-The model files are hashed (also just what it is), so we need to dig up the links to map the files.
-
-```sh
-model/models--Qwen--Qwen3-1.7B/snapshots/<UUID-DIR-PATH>
+```
+model/models--Qwen--Qwen3-1.7B/snapshots/<UUID>
 ```
 
-The export script loads the model file into memory using PyTorch and will take up a considerable amount of memory.
-You will need a minimum of 32GB of CPU RAM to convert the model file. The 1.6B model may consume up to ~25.6GB of CPU RAM.
+You’ll need \~32GB RAM during this step. The export script loads the full model into memory.
 
 ```sh
-python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots/<UUID-DIR-PATH>
+python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots/<UUID>
 ```
 
-## Build the inference engine
+## Build the Inference Engine
 
-The inference engine uses a single-threaded model for simplicity.
-This means it's very slow - even at Q8.
-I plan on modding the implementation to support posix multi-threading for the matmuls later on.
-For now, it is what it is.
+The inference engine is single-threaded by default. It works, but it's **slow**, even with Q8 quantization.
+
+Multi-threaded support (e.g. using OpenMP) is planned via POSIX threading.
+
+### Default Make
 
 ```sh
 make
 ```
 
-To optimize the binary for faster inference, the [author of this repo](https://github.com/adriancable/qwen3.c)
-recommends compiling with openmp.
+### Use OpenMP
 
 ```sh
 make openmp
 ```
 
-I just build with `gcc`. The original author set it so it uses openmp.
+### Use GCC (manually)
 
 ```sh
 make gnu
 ```
 
-The manual build command is just a one-liner that enables compiler optimizations.
+Or directly:
 
 ```sh
 gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 ```
 
-## Inference the model
+## Run Inference
 
-To view help, run the binary.
+### View Help
 
 ```sh
 ./runq
 ```
 
-You can configure model settings via the command line. Settings include a system prompt, setting temperature, sampling parameters and so forth.
-
-To run inference, we need to use a few flags from the help output.
-
-The inference engine supports both completions and chat completions via a mode parameter.
-For completions, use one of two keywords for the `-m` flag: `generate` or `chat` (default).
+### Basic Completion
 
 ```sh
-./runq model/Qwen3-1.7B-Q8.bin -m 'generate' -i 'Once upon a time'
+./runq model/Qwen3-1.7B-Q8.bin -m generate -i 'Once upon a time'
 ```
 
-Fun things you can try asking:
+> `-m` can be `generate` or `chat` (default).
 
-> Tell me a surprising fact about an animal of your choice.
+#### Fun prompts to try:
 
-> Write a short story for a 5 year old girl, featuring Sobieski the dog and Pepe the cat.
+* `Tell me a surprising fact about an animal of your choice.`
+* `Write a short story for a 5-year-old featuring Sobieski the dog and Pepe the cat.`
+* `Write a C program which sorts a list using the bubble sort algorithm.`
+* `Translate into English: 我希望您喜欢使用 qwen3.c 学习 LLM。`
 
-> Write a C program which sorts a list using the bubble sort algorithm.
+## Reasoning Mode
 
-> Write a poem about a little boy who builds a rocket to fly to the moon. In Japanese, please.
+To enable math/thinking features (if supported by the model):
 
-> Translate into English: 我希望您喜欢使用 qwen3.c 学习 LLM。
-
-## Experiment with reasoning mode
-
-qwen3.c also supports reasoning/thinking, if the model used supports it. Enable thinking with the `-r 1` command line parameter:
-
-```aiignore
+```sh
 ./runq model/Qwen3-4B-Q8.bin -r 1
 ```
 
-Then try:
+Try:
 
-> Solve the quadratic equation x^2 - 5x + 6 = 0.
+* `Solve the quadratic equation x^2 - 5x + 6 = 0.`
+* `What is 19673261 * 1842.64?`
 
-> What is 19673261 * 1842.64?
+## Try Other Models
 
-## Explore other models
-
-Try for example DeepSeek-R1-0528-Qwen3-8B:
+Example: DeepSeek-R1-0528-Qwen3-8B
 
 ```sh
 huggingface-cli download deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --cache-dir model
-python -m qwen3 model/DeepSeek-R1-0528-Qwen3-8B-Q8.bin model/<model-dir-path>
-```
 
-Then:
-
-```sh
+python -m qwen3 model/DeepSeek-R1-0528-Qwen3-8B-Q8.bin model/<model-dir>
 ./runq model/DeepSeek-R1-0528-Qwen3-8B-Q8.bin
 ```
 
