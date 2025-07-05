@@ -103,9 +103,10 @@ python -m qwen3 model/Qwen3-1.7B-Q8.bin model/models--Qwen--Qwen3-1.7B/snapshots
 
 ## Build the Inference Engine
 
-The inference engine is single-threaded by default. It works, but it's **slow**, even with Q8 quantization.
-
-Multi-threaded support (e.g. using OpenMP) is planned via POSIX threading.
+The inference engine is single-threaded by default.
+OpenMP support must be explicitly enabled (see below).
+It works, but it's **slow**, even with Q8 quantization.
+POSIX threading support is planned.
 
 ### Default Make
 
