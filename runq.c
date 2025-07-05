@@ -362,17 +362,20 @@ float *forward(Transformer *transformer, int token, int pos) {
 
     // forward all the layers
     for (int l = 0; l < p->n_layers; l++) {
-        // save key,value at this time step (pos) to our kv cache
-        uint64_t loff = l * (uint64_t)p->seq_len * kv_dim; // kv cache layer offset for convenience
+        // KV cache layer offset
+        uint64_t loff = l * (uint64_t)p->seq_len * kv_dim;
 
+        // Save KV at this time step (pos) to cache
         s->k = s->key_cache + loff + pos * kv_dim;
         s->v = s->value_cache + loff + pos * kv_dim;
 
-        // attention rmsnorm
+        // Normalize the input to attention.
         rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
 
-        // qkv matmuls for this position
+        // Quantize for matmul efficiency.
         quantize(&s->xq, s->xb, dim);
+
+        // Compute Q, K, V for this timestep.
         matmul(s->q, &s->xq, w->wq + l, dim, all_heads_dim);
         matmul(s->k, &s->xq, w->wk + l, dim, kv_dim);
         matmul(s->v, &s->xq, w->wv + l, dim, kv_dim);
@@ -385,6 +388,7 @@ float *forward(Transformer *transformer, int token, int pos) {
             float *q = s->q + h * p->head_dim;
 
             rmsnorm(q, q, gq, p->head_dim);
+            // compute frequencies
             for (int j = 0; j < p->head_dim/2; j++) {
                 float freq = powf(1e6, -(float)j / (p->head_dim/2));
                 float cos_freq = cosf(pos * freq);
@@ -403,9 +407,11 @@ float *forward(Transformer *transformer, int token, int pos) {
             float *k = s->k + h * p->head_dim;
 
             rmsnorm(k, k, gk, p->head_dim);
+            // compute frequencies
             for (int j = 0; j < p->head_dim/2; j++) {
                 float freq = powf(1e6, -(float)j / (p->head_dim/2));
-                float cos_freq = cosf(pos * freq), sin_freq = sinf(pos * freq);
+                float cos_freq = cosf(pos * freq);
+                float sin_freq = sinf(pos * freq);
 
                 float x = k[j];
                 float y = k[j + p->head_dim/2];
