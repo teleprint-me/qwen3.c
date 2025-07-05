@@ -61,7 +61,7 @@ For the frozen versioning, use `requirements.dev.txt` and omit the `--upgrade` f
 pip install -r requirements.dev.txt
 ```
 
-Only use one of these methods. Not both. Otherwise, you'll run into conflicts.
+⚠️ **Do not install both** — it will cause dependency conflicts.
 
 ## Download the model
 
@@ -216,4 +216,6 @@ To show available settings, run qwen3.c without any command-line parameters:
 
 ## License
 
-MIT
+MIT License.
+
+Original work by [Adrian Cable](https://github.com/adriancable/qwen3.c).
