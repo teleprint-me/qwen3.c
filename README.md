@@ -136,14 +136,14 @@ gcc runq.c -o runq -lm -Ofast -fopenmp -march=native -D_FILE_OFFSET_BITS=64
 
 ### Enable Multi-threading via OpenMP
 
-By default, OpenMP uses only **one thread** unless specified.
+By default, OpenMP uses **all threads** unless specified otherwise.
 
 You can set the number of threads using the `OMP_NUM_THREADS` environment variable.
 
 #### Option 1: Export Once
 
 ```sh
-export OMP_NUM_THREADS=$(nproc)
+export OMP_NUM_THREADS=8
 ./runq model/Qwen3-1.7B-Q8.bin
 ```
 
@@ -152,7 +152,7 @@ export OMP_NUM_THREADS=$(nproc)
 #### Option 2: Inline Per Run
 
 ```sh
-OMP_NUM_THREADS=$(nproc) ./runq model/Qwen3-1.7B-Q8.bin
+OMP_NUM_THREADS=8 ./runq model/Qwen3-1.7B-Q8.bin
 ```
 
 > This method is **one-shot** — it applies only to the current invocation.
