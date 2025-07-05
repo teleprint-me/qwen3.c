@@ -247,7 +247,7 @@ void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weigh
     // checkpoint format is 256-byte header, and then the model weights
 
     memcpy(config, *data, sizeof(Config));
-    if (config->magic_number != 0x616a6331) { fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint); exit(EXIT_FAILURE); }
+    if (config->magic_number != 0x7177656E) { fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint); exit(EXIT_FAILURE); }
     if (config->version != 1) { fprintf(stderr, "Checkpoint %s is version %d, need version 1\n", checkpoint, config->version); exit(EXIT_FAILURE); }
 
     if (ctx_length != 0 && ctx_length <= config->seq_len)

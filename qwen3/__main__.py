@@ -113,8 +113,8 @@ def model_export(model, output_file, group_size=64):
     # write
     out_file = open(output_file, "wb")
     # first write out the header. the header will be 256 bytes
-    # 1) write magic, which will be uint32 of "ajc1" in ASCII
-    out_file.write(struct.pack("I", 0x616A6331))
+    # 1) write magic, which will be uint32 of "qwen" in ASCII
+    out_file.write(struct.pack("I", 0x7177656E))
     # 2) write version, which will be int
     out_file.write(struct.pack("i", version))
     # 3) write the params, which will be 7 ints
