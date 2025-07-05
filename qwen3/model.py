@@ -1,10 +1,13 @@
+"""
+@file qwen3.model
+@brief Qwen3 model architecture.
+"""
+
 import math
-import struct
 import inspect
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn

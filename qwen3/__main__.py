@@ -1,5 +1,7 @@
 """
-This script has functions and utilties for model export.
+@file qwen3.__main__
+@brief This script has functions and utilties for model export.
+
 Basically, we have a bunch of versions of the model, and we
 want to export them to .bin files to be read from and inferenced in C.
 
@@ -16,11 +18,9 @@ This script aspires to provide all of these conversions.
 """
 
 import argparse
-import gzip
 import json
 import math
 import os
-import shutil
 import struct
 from pathlib import Path
 
@@ -28,10 +28,12 @@ import numpy as np
 import torch
 from torch import nn
 
-from model import ModelArgs, Transformer
+from qwen3.model import ModelArgs, Transformer
 
 import json
 from jinja2 import Template
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # -----------------------------------------------------------------------------
 # common utilities
@@ -78,7 +80,7 @@ def quantize_q80(w, group_size):
     return int8val, scale, maxerr
 
 
-def model_export(model, filepath, group_size=64):
+def model_export(model, output_file, group_size=64):
     """
     Export the model weights in Q8_0 into .bin file to be read from C.
     That is:
@@ -112,7 +114,7 @@ def model_export(model, filepath, group_size=64):
         ), f"weight {i} has numel {w.numel()}, not a multiple of group_size {group_size}"
 
     # write
-    out_file = open(filepath, "wb")
+    out_file = open(output_file, "wb")
     # first write out the header. the header will be 256 bytes
     # 1) write magic, which will be uint32 of "ajc1" in ASCII
     out_file.write(struct.pack("I", 0x616A6331))
@@ -151,9 +153,9 @@ def model_export(model, filepath, group_size=64):
 
     # write out the QK-LayerNorm weights (Qwen3)
     for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.lq.weight if layer.attention.lq.weight is not None else torch.ones(config.head_dim))
+        serialize_fp32(out_file, layer.attention.lq.weight if layer.attention.lq.weight is not None else torch.ones(model.params.head_dim))
     for layer in model.layers:
-        serialize_fp32(out_file, layer.attention.lk.weight if layer.attention.lk.weight is not None else torch.ones(config.head_dim))
+        serialize_fp32(out_file, layer.attention.lk.weight if layer.attention.lk.weight is not None else torch.ones(model.params.head_dim))
 
     # now let's write out all the params that we are quantizing to Q8_0
     # note we skip classifier weights, which are shared with the embedding
@@ -176,7 +178,7 @@ def model_export(model, filepath, group_size=64):
 
     # write to binary file
     out_file.close()
-    print(f"Written model checkpoint to {filepath}")
+    print(f"Written model checkpoint to {output_file}")
 
 ## Tokenizer functions
 
@@ -294,23 +296,15 @@ def build_prompts(model, file):
 # Load / import functions
 
 
-def load_hf_model(model_path):
-
-    try:
-        from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-    except ImportError:
-        print("Error: transformers package is required to load huggingface models")
-        print("Please run `pip install transformers` to install it")
-        return None
-
+def load_model(input_dir):
     # load HF model
-    hf_model = AutoModelForCausalLM.from_pretrained(model_path)
-    hf_dict = hf_model.state_dict()
+    model = AutoModelForCausalLM.from_pretrained(input_dir)
+    state_dict = model.state_dict()
 
     # convert config to ModelArgs
     config = ModelArgs()
 
-    with open(os.path.join(model_path, 'config.json'), 'r') as f:
+    with open(os.path.join(input_dir, 'config.json'), 'r') as f:
         config_json = json.load(f)
 
     config.dim = config_json["hidden_size"]
@@ -328,51 +322,51 @@ def load_hf_model(model_path):
     # create a new Transformer object and set weights
     model = Transformer(config)
 
-    model.tok_embeddings.weight = nn.Parameter(hf_dict["model.embed_tokens.weight"])
-    model.norm.weight = nn.Parameter(hf_dict["model.norm.weight"])
+    model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])
+    model.norm.weight = nn.Parameter(state_dict["model.norm.weight"])
 
-    model.tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model.tokenizer = AutoTokenizer.from_pretrained(input_dir)
     model.bos_token_id = config_json.get("bos_token_id", 0)
     model.eos_token_id = config_json.get("eos_token_id", 0)
 
     for layer in model.layers:
         i = layer.layer_id
         layer.attention_norm.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.input_layernorm.weight"]
+            state_dict[f"model.layers.{i}.input_layernorm.weight"]
         )
         layer.attention.wq.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
+            state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
         )
         layer.attention.wk.weight = nn.Parameter(
-            hf_dict[f'model.layers.{i}.self_attn.k_proj.weight']
+            state_dict[f'model.layers.{i}.self_attn.k_proj.weight']
         )
         layer.attention.wv.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
+            state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
         )
         layer.attention.wo.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
+            state_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
         )
         layer.attention.lq.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.self_attn.q_norm.weight"]
+            state_dict[f"model.layers.{i}.self_attn.q_norm.weight"]
         )
         layer.attention.lk.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.self_attn.k_norm.weight"]
+            state_dict[f"model.layers.{i}.self_attn.k_norm.weight"]
         )
         layer.ffn_norm.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
+            state_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
         )
         layer.feed_forward.w1.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.mlp.gate_proj.weight"]
+            state_dict[f"model.layers.{i}.mlp.gate_proj.weight"]
         )
         layer.feed_forward.w2.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.mlp.down_proj.weight"]
+            state_dict[f"model.layers.{i}.mlp.down_proj.weight"]
         )
         layer.feed_forward.w3.weight = nn.Parameter(
-            hf_dict[f"model.layers.{i}.mlp.up_proj.weight"]
+            state_dict[f"model.layers.{i}.mlp.up_proj.weight"]
         )
 
     # final classifier
-    model.output.weight = nn.Parameter(hf_dict["lm_head.weight"])
+    model.output.weight = nn.Parameter(state_dict["lm_head.weight"])
     model.eval()
     return model
 
@@ -381,23 +375,14 @@ def load_hf_model(model_path):
 # CLI entrypoint
 
 if __name__ == "__main__":
-
+    # Parse CLI parameters
     parser = argparse.ArgumentParser()
-    parser.add_argument("filepath", type=str, help="the output filepath")
-    parser.add_argument("hfpath", type=str, help="huggingface model path")
+    parser.add_argument("output_file", type=str, help="The output file path.")
+    parser.add_argument("input_dir", type=str, help="The input dir path.")
     args = parser.parse_args()
 
-    if args.filepath is None or args.hfpath is None:
-        print("Usage: export.py <output.bin> <huggingface_input_path>")
-        print("")
-        print("e.g.   git clone https://huggingface.co/Qwen/Qwen3-4B")
-        print("       export.py Qwen3-4B.bin Qwen/Qwen3-4B")
-        print("")
-        exit(0)
-
-    model = load_hf_model(args.hfpath)
-
-    # export
-    build_tokenizer(model, args.filepath)
-    build_prompts(model, args.filepath)
-    model_export(model, args.filepath)
+    # Convert Qwen3 from pytorch to Q8 binary file
+    model = load_model(args.input_dir)
+    build_tokenizer(model, args.output_file)
+    build_prompts(model, args.output_file)
+    model_export(model, args.output_file)
