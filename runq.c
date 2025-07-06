@@ -438,15 +438,17 @@ void attention(Config* p, RunState* s, int l, int pos) {
     }
 }
 
+// This is only ever used once but is abstracted for clarity
+// SwiGLU(x) = silu(W₁x) ⊙ W₃x
 void activate(RunState* s, int hidden_dim) {
-    // SwiGLU non-linearity
+    float* hb  = s->hb;  // W1(x)
+    float* hb2 = s->hb2; // W3(x)
+
+    #pragma omp parallel for
     for (int i = 0; i < hidden_dim; i++) {
-        float val = s->hb[i];
-        // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
-        val *= (1.0f / (1.0f + expf(-val)));
-        // elementwise multiply with w3(x)
-        val *= s->hb2[i];
-        s->hb[i] = val;
+        float x = hb[i];
+        float sig = 1.0f / (1.0f + expf(-x)); // sigmoid(x)
+        hb[i] = x * sig * hb2[i];             // silu(x) * hb2[i]
     }
 }
 
