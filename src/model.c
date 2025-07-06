@@ -15,8 +15,9 @@ State* state_create(Params* p) {
     const int kv_dim = p->n_kv_heads * p->head_dim;
     const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
 
-    assert(projection % GS == 0 && "projection must be divisible by GS");
-    assert(hidden_dim % GS == 0 && "hidden_dim must be divisible by GS");
+    assert(0 == projection % GS && "projection must be divisible by GS");
+    assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
+    assert(0 != cache_len && "Empty cache size");
 
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
@@ -38,7 +39,9 @@ State* state_create(Params* p) {
     s->mlp_in = calloc(hidden_dim, sizeof(float));
     s->mlp_gate = calloc(hidden_dim, sizeof(float));
 
+    // qx.q stores int8_t quantized values of r (projection dim)
     s->qx.q = calloc(projection, sizeof(int8_t));
+    // qx.s stores per-group scale factors (projection / GS)
     s->qx.s = calloc(projection / GS, sizeof(float));
 
     s->qh.q = calloc(hidden_dim, sizeof(int8_t));
