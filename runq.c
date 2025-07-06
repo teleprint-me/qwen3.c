@@ -1,4 +1,16 @@
-/* Inference for Qwen-3 Transformer model in pure C, int8 quantized forward pass. */
+/**
+ * @file runq.c
+ * @brief Inference for Qwen-3 Transformer model in pure C, int8 quantized forward pass.
+ *
+ * Qwen3-4B has the following features:
+ *   - Type: Causal Language Models
+ *   - Training Stage: Pretraining & Post-training
+ *   - Number of Parameters: 0.6B, 1.7B, and 4B
+ *   - Number of Embedding Paramaters: ~0.4B
+ *   - Number of Layers: 36
+ *   - Number of Attention Heads (GQA): 32 for Q and 8 for KV
+ *   - Context Length: 32768 natively and 131072 tokens with YaRN.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
