@@ -438,6 +438,18 @@ void attention(Config* p, RunState* s, int l, int pos) {
     }
 }
 
+void activate(RunState* s, int hidden_dim) {
+    // SwiGLU non-linearity
+    for (int i = 0; i < hidden_dim; i++) {
+        float val = s->hb[i];
+        // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
+        val *= (1.0f / (1.0f + expf(-val)));
+        // elementwise multiply with w3(x)
+        val *= s->hb2[i];
+        s->hb[i] = val;
+    }
+}
+
 float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
     Config *p = &transformer->config;
@@ -518,14 +530,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         matmul(s->hb2, &s->xq, w->w3 + l, dim, hidden_dim);
 
         // SwiGLU non-linearity
-        for (int i = 0; i < hidden_dim; i++) {
-            float val = s->hb[i];
-            // silu(x)=x*σ(x), where σ(x) is the logistic sigmoid
-            val *= (1.0f / (1.0f + expf(-val)));
-            // elementwise multiply with w3(x)
-            val *= s->hb2[i];
-            s->hb[i] = val;
-        }
+        activate(s, hidden_dim);
 
         // final matmul to get the output of the ffn
         quantize(&s->hq, s->hb, hidden_dim);
