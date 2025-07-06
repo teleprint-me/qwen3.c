@@ -363,6 +363,52 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
+/// @warning This is not thread-safe
+void attention(Config* p, RunState* s, int l, int pos) {
+    int kv_mul = p->n_heads / p->n_kv_heads;
+    int kv_dim = p->n_kv_heads * p->head_dim;
+    uint64_t loff = (uint64_t) (l * p->seq_len * kv_dim);
+
+    for (int h = 0; h < p->n_heads; h++) {
+        // get the query vector for this head
+        float *q = s->q + h * p->head_dim;
+        // attention scores for this head
+        float *att = s->att + h * p->seq_len;
+
+        // iterate over all timesteps, including the current one
+        #pragma omp parallel for
+        for (int t = 0; t <= pos; t++) {
+            // get the key vector for this head and at this timestep
+            float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
+            // calculate the attention score as the dot product of q and k
+            float score = 0;
+            for (int i = 0; i < p->head_dim; i++)
+                score += q[i] * k[i];
+
+            // save the score to the attention buffer
+            att[t] = score / sqrtf(p->head_dim);
+        }
+
+        // softmax the scores to get attention weights, from 0..pos inclusively
+        softmax(att, pos + 1);
+
+        // weighted sum of the values, store back into xb
+        float *xb = s->xb + h * p->head_dim;
+        memset(xb, 0, p->head_dim * sizeof(float));
+
+        #pragma omp parallel for
+        for (int t = 0; t <= pos; t++) {
+            // get the value vector for this head and at this timestep
+            float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
+            // get the attention weight for this timestep
+            float a = att[t];
+            // accumulate the weighted value into xb
+            for (int i = 0; i < p->head_dim; i++)
+                xb[i] += a * v[i];
+        }
+    }
+}
+
 float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
     Config *p = &transformer->config;
