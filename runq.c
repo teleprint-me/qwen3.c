@@ -418,7 +418,7 @@ void attention(Config* p, RunState* s, int l, int pos) {
         #pragma omp parallel
         {
             float tmp[head_dim];
-            memset(tmp, 0, sizeof(tmp));
+            memset(tmp, 0, head_dim * sizeof(float));
 
             #pragma omp for
             for (int t = 0; t <= pos; t++) {
