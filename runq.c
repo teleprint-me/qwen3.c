@@ -182,14 +182,20 @@ void quantize(QuantizedTensor *qx, float *x, int n) {
             wmax = fmaxf(wmax, fabsf(xg[i]));
         }
 
-        float scale = (wmax == 0.0f) ? 1e-3f : (wmax / Q_MAX); // avoid div by 0
+        float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
         qx->s[group] = scale;
 
+        /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
         #pragma omp parallel for
         for (int i = 0; i < GS; i++) {
             float q = xg[i] / scale;
-            int8_t qi = (int8_t) roundf(q);
-            qg[i] = qi;
+
+            int8_t qi;
+            if (q > Q_MAX) { qi = Q_MAX; }
+            else if (q < -Q_MAX) { qi = -Q_MAX; }
+            else { qi = (int8_t) roundf(q); }
+
+            qg[i] = (int8_t) qi;
         }
     }
 }
