@@ -1,5 +1,6 @@
 model/
 .vscode/
+.clang-format
 
 #
 # C ignore rules
