@@ -236,10 +236,10 @@ void memory_map_weights(TransformerWeights *w, Config *p, void *ptr) {
     w->wq = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
     w->wk = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
     w->wv = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wo = init_quantized_tensors(&ptr, p->n_layers, (p->n_heads * p->head_dim) * p->dim);
+    w->wo = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
 
     w->w1 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
-    w->w2 = init_quantized_tensors(&ptr, p->n_layers, p->hidden_dim * p->dim);
+    w->w2 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
     w->w3 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
 
     w->wcls = p->shared_classifier ? w->q_tokens : init_quantized_tensors(&ptr, 1, p->dim * p->vocab_size);
