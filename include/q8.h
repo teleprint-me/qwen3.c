@@ -4,26 +4,39 @@
 
 #include <stdint.h>
 
-extern int GS; // group size for quantization (default: 1)
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-typedef struct Q8Tensor {
-  int8_t *q; // quantized values
-  float *s;  // scaling factors
+extern int GS; // global quantization group size
+
+typedef struct {
+    int8_t* q; // quantized values
+    float* s; // scaling factors per group
 } Q8Tensor;
 
-void q8_quantize(Q8Tensor *qt, float *x, int n);
-void q8_dequantize(Q8Tensor *qt, float *x, int n);
+/**
+ * Quantizes `n` float32 values into Q8 format using group-wise scaling.
+ * Assumes `GS` evenly divides `n`.
+ */
+void q8_quantize(Q8Tensor* qt, float* x, int n);
 
 /**
- * Initializes a Q8Tensor from raw memory:
- *   - `w` should point to a buffer (e.g., from mmap or malloc)
- *   - `n` is the number of groups
- *   - `group_size` is the number of int8 values per group (usually equal to group size)
- *
- * Returns a pointer to a Q8Tensor where:
- *   - q points to int8 values
- *   - s points to group scaling factors
+ * Dequantizes `n` Q8 values back into float32.
  */
-Q8Tensor *q8_tensor(void **w, int n, int group_size);
+void q8_dequantize(Q8Tensor* qt, float* x, int n);
+
+/**
+ * Initializes a Q8Tensor view from raw memory.
+ *   - `W` should point to memory of size (n * stride + n * sizeof(float))
+ *   - `n` is the number of groups
+ *   - `stride` is the number of int8 values per group
+ *   - Returns a Q8Tensor pointing into `*w` (memory is not copied)
+ */
+Q8Tensor* q8_tensor(void** W, int n, int stride);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // QWEN_Q8_H
