@@ -410,8 +410,9 @@ void attention(Config* p, RunState* s, int l, int pos) {
             for (int t = 0; t <= pos; t++) {
                 float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
                 float a = att[t];
-                for (int i = 0; i < head_dim; i++)
+                for (int i = 0; i < head_dim; i++) {
                     tmp[i] += a * v[i];
+                }
             }
 
             // Reduce thread-local buffer into shared output
