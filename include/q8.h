@@ -27,13 +27,21 @@ void q8_quantize(Q8Tensor* qt, float* x, int n);
 void q8_dequantize(Q8Tensor* qt, float* x, int n);
 
 /**
- * Initializes a Q8Tensor view from raw memory.
- *   - `W` should point to memory of size (n * stride + n * sizeof(float))
- *   - `n` is the number of groups
- *   - `stride` is the number of int8 values per group
- *   - Returns a Q8Tensor pointing into `*w` (memory is not copied)
+ * Parses an array of Q8_0 quantized tensors from flat memory.
+ *
+ * Each tensor is stored as:
+ *   - [int8_t[size]]: flattened weight
+ *   - [float[size / GS]]: scale factors (1 per group)
+ *
+ * The input `*X` is expected to point to the start of this data.
+ * On return, `*X` will be advanced past the parsed region.
+ *
+ * @param b Pointer to raw memory buffer (usually mapped model)
+ * @param n Number of tensors to parse
+ * @param size Number of int8_t elements in each tensor (must be divisible by GS)
+ * @return Q8Tensor array with n entries (caller must free)
  */
-Q8Tensor* q8_tensor(void** W, int n, int stride);
+Q8Tensor* q8_tensor(void** b, int n, int size);
 
 #ifdef __cplusplus
 }

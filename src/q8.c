@@ -39,19 +39,24 @@ void q8_dequantize(Q8Tensor* qt, float* x, int n) {
     }
 }
 
-Q8Tensor* q8_tensor(void** W, int n, int stride) {
-    void* p = *W;
-    Q8Tensor* res = malloc(n * sizeof(Q8Tensor));
-
-    for (int i = 0; i < n; i++) {
-        // map quantized int8 values
-        res[i].q = (int8_t*) p;
-        p = (int8_t*) p + stride;
-
-        // map scale factors
-        res[i].s = (float*) p;
-        p = (float*) p + stride / GS;
+Q8Tensor* q8_tensor(void** b, int n, int size) {
+    void* c = *b; // current pos
+    Q8Tensor* qt = calloc(n, sizeof(Q8Tensor));
+    if (!qt) {
+        return NULL;
     }
-    *W = p; // advance ptr to current position
-    return res;
+
+#pragma omp parallel for
+    for (int i = 0; i < n; i++) {
+        // map q8 values
+        qt[i].q = (int8_t*) c;
+        c = (int8_t*) c + size;
+
+        // map scalars
+        qt[i].s = (float*) c;
+        c = (float*) c + size / GS;
+    }
+
+    *b = c; // advance buf
+    return qt;
 }
