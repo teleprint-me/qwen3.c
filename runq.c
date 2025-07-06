@@ -161,21 +161,25 @@ void free_run_state(RunState* s) {
 // Quantization functions
 
 void dequantize(QuantizedTensor *qx, float *x, int n) {
-    for (int i = 0; i < n; i++)
+    #pragma omp parallel for
+    for (int i = 0; i < n; i++) {
         x[i] = qx->q[i] * qx->s[i / GS];
+    }
 }
 
 void quantize(QuantizedTensor *qx, float *x, int n) {
     int num_groups = n / GS;
     float Q_MAX = 127.0f;
 
+    #pragma omp parallel for
     for (int group = 0; group < num_groups; group++) {
         // find the max absolute value in the current group
         float wmax = 0;
         for (int i = 0; i < GS; i++) {
             float val = fabs(x[group * GS + i]);
-            if (val > wmax)
+            if (val > wmax) {
                 wmax = val;
+            }
         }
 
         // calculate and write the scaling factor
