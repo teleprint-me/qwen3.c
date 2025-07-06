@@ -10,6 +10,8 @@
  *   - Number of Layers: 0.6B/1.7B -> 28, 4B -> 36
  *   - Number of Attention Heads (GQA): 0.6B/1.7B -> 16 for Q, 4B -> 32 for Q, always 8 for KV
  *   - Context Length: 32768 natively and 131072 tokens with YaRN.
+ * 
+ * @ref https://huggingface.co/collections/Qwen/qwen3-67dd247413f0e2e4f653967f
  */
 
 #include <stdio.h>
