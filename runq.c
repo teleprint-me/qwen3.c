@@ -168,29 +168,28 @@ void dequantize(QuantizedTensor *qx, float *x, int n) {
 }
 
 void quantize(QuantizedTensor *qx, float *x, int n) {
-    int num_groups = n / GS;
-    float Q_MAX = 127.0f;
+    const int num_groups = n / GS;
+    const float Q_MAX = 127.0f;
 
-    #pragma omp parallel for
     for (int group = 0; group < num_groups; group++) {
-        // find the max absolute value in the current group
-        float wmax = 0;
+        float* xg  = x + group * GS;
+        int8_t* qg = qx->q + group * GS;
+
+        // Find max absolute value
+        float wmax = fabsf(xg[0]);
+        #pragma omp simd reduction(max:wmax)
         for (int i = 0; i < GS; i++) {
-            float val = fabs(x[group * GS + i]);
-            if (val > wmax) {
-                wmax = val;
-            }
+            wmax = fmaxf(wmax, fabsf(xg[i]));
         }
 
-        // calculate and write the scaling factor
-        float scale = wmax / Q_MAX;
+        float scale = (wmax == 0.0f) ? 1e-3f : (wmax / Q_MAX); // avoid div by 0
         qx->s[group] = scale;
 
-        // calculate and write the quantized values
+        #pragma omp parallel for
         for (int i = 0; i < GS; i++) {
-            float quant_value = x[group * GS + i] / scale; // scale
-            int8_t quantized = (int8_t) round(quant_value); // round and clamp
-            qx->q[group * GS + i] = quantized;
+            float q = xg[i] / scale;
+            int8_t qi = (int8_t) roundf(q);
+            qg[i] = qi;
         }
     }
 }
