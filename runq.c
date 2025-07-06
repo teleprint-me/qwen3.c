@@ -438,18 +438,18 @@ void attention(Config* p, RunState* s, int l, int pos) {
     }
 }
 
-// σ(x) = 1 / 1 + exp(-x)
+/// @brief σ(x) = 1 / 1 + exp(-x)
 /// @note This can not be modified. The model will become incoherent.
 float sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x));
 }
 
-// x∗σ(x), where σ(x) is the logistic sigmoid.
+/// @brief x∗σ(x), where σ(x) is the logistic sigmoid.
 float silu(float x) {
     return x * sigmoid(x);
 }
 
-// SwiGLU(x) = silu(W₁x) ⊙ W₃x
+/// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
 void swish(RunState* s, int hidden_dim) {
     float* hb  = s->hb;  // W1(x)
     float* hb2 = s->hb2; // W3(x)
