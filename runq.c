@@ -178,7 +178,7 @@ void quantize(QuantizedTensor *qx, float *x, int n) {
         // Find max absolute value
         float wmax = fabsf(xg[0]);
         #pragma omp simd reduction(max:wmax)
-        for (int i = 0; i < GS; i++) {
+        for (int i = 1; i < GS; i++) {
             wmax = fmaxf(wmax, fabsf(xg[i]));
         }
 
