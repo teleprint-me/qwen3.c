@@ -10,7 +10,7 @@ extern "C" {
 
 extern int GS; // global quantization group size
 
-typedef struct {
+typedef struct Q8Tensor {
     int8_t* q; // quantized values
     float* s; // scaling factors per group
 } Q8Tensor;
