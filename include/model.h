@@ -23,7 +23,7 @@
  * CONFIGURATION
  */
 
-typedef struct Config {
+typedef struct Params {
     int magic_number; // checkpoint magic number ("qwen")
     int version; // file format version
     int dim; // transformer width (e.g. 2048)
@@ -34,9 +34,9 @@ typedef struct Config {
     int vocab_size; // number of tokens in vocabulary
     int seq_len; // maximum sequence length (e.g. 40960)
     int head_dim; // dimension per head
-    int shared_classifier; // if true, wcls = token embedding weights
+    int shared_classifier; // if true, cls = token embedding weights
     int group_size; // quantization group size (typically 64)
-} Config;
+} Params;
 
 /**
  * WEIGHTS
@@ -85,27 +85,26 @@ typedef struct Weights {
  * Buffers are overwritten at each layer.
  */
 typedef struct State {
-    // Core activations
-    float* x; // current token embedding or residual (dim)
-    float* tmp; // residual path temp (dim)
+    // Residual stream
+    float* x; // persistent residual (dim)
+    float* r; // normalized / projected buffer (n_heads * head_dim)
+    float* att_out; // attention output before residual (dim)
 
     // Attention workspace
-    float* q; // query vector (n_heads * head_dim)
-    float* k; // key vector (n_kv_heads * head_dim)
-    float* v; // value vector (n_kv_heads * head_dim)
-    float* att; // attention scores (n_heads, seq_len)
-
-    // Output
+    float* q; // query (n_heads * head_dim)
+    float* k; // key   (n_kv_heads * head_dim)
+    float* v; // value (n_kv_heads * head_dim)
+    float* att; // attention scores (n_heads * seq_len)
     float* logits; // final output logits (vocab_size)
 
-    // Key/value memory
-    float* k_cache; // (n_layers, seq_len, dim)
-    float* v_cache; // (n_layers, seq_len, dim)
+    // Key/value cache
+    float* k_cache; // (n_layers, seq_len, kv_dim)
+    float* v_cache; // (n_layers, seq_len, kv_dim)
 
-    // MLP workspace
+    // FFN
     float* mlp_in; // result of w1(x) (hidden_dim)
     float* mlp_gate; // result of w3(x) (hidden_dim)
-    Q8Tensor qx; // quantized x (dim)
+    Q8Tensor qx; // quantized residual input (dim)
     Q8Tensor qh; // quantized mlp_in (hidden_dim)
 } State;
 
@@ -115,10 +114,13 @@ typedef struct State {
 
 typedef struct Transformer {
     float* data; // pointer to memory-mapped model weights
-    Config config; // model architecture + hyperparameters
+    Params config; // model architecture + hyperparameters
     Weights weights; // model weights (quantized + fp32 norms)
     State state; // forward pass scratch space
     ssize_t file_size;
 } Transformer;
+
+State* state_create(Params* p);
+void state_free(State* s);
 
 #endif // QWEN_MODEL_H
