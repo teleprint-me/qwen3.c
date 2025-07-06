@@ -438,17 +438,25 @@ void attention(Config* p, RunState* s, int l, int pos) {
     }
 }
 
-// This is only ever used once but is abstracted for clarity
+// σ(x) = 1 / 1 + exp(-x)
+/// @note This can not be modified. The model will become incoherent.
+float sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+// x∗σ(x), where σ(x) is the logistic sigmoid.
+float silu(float x) {
+    return x * sigmoid(x);
+}
+
 // SwiGLU(x) = silu(W₁x) ⊙ W₃x
-void activate(RunState* s, int hidden_dim) {
+void swish(RunState* s, int hidden_dim) {
     float* hb  = s->hb;  // W1(x)
     float* hb2 = s->hb2; // W3(x)
 
     #pragma omp parallel for
     for (int i = 0; i < hidden_dim; i++) {
-        float x = hb[i];
-        float sig = 1.0f / (1.0f + expf(-x)); // sigmoid(x)
-        hb[i] = x * sig * hb2[i];             // silu(x) * hb2[i]
+        hb[i] = silu(hb[i]) * hb2[i];
     }
 }
 
@@ -532,7 +540,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         matmul(s->hb2, &s->xq, w->w3 + l, dim, hidden_dim);
 
         // SwiGLU non-linearity
-        activate(s, hidden_dim);
+        swish(s, hidden_dim);
 
         // final matmul to get the output of the ffn
         quantize(&s->hq, s->hb, hidden_dim);
