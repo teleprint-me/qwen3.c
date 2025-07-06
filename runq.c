@@ -304,23 +304,31 @@ void rmsnorm(float *o, float *x, float *weight, int size) {
     }
 }
 
+/// @todo Cache max_val if last token's softmax is reused (e.g. in KV cache).
+/// @todo Replace expf() with fast_approx_exp() if precision tradeoff is acceptable.
+/// @todo Consider log-sum-exp for log-domain ops.
 void softmax(float *x, int size) {
     // find max value (for numerical stability)
-    float max_val = 0;
-    for (int i = 0; i < size; i++)
-        if (x[i] > max_val)
+    float max_val = x[0]; // use first element as initial guess
+    for (int i = 1; i < size; i++) {
+        if (x[i] > max_val) {
             max_val = x[i];
+        }
+    }
 
-    // exp and sum
-    float sum = 0;
+    // exponentiate and sum
+    float sum = 0.0f;
+    #pragma omp parallel for reduction(+:sum)
     for (int i = 0; i < size; i++) {
         x[i] = expf(x[i] - max_val);
         sum += x[i];
     }
 
     // normalize
-    for (int i = 0; i < size; i++)
+    #pragma omp parallel for
+    for (int i = 0; i < size; i++) {
         x[i] /= sum;
+    }
 }
 
 void matmul(float *xout, QuantizedTensor *x, QuantizedTensor *w, int n, int d) {
@@ -363,48 +371,54 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
-/// @warning This is not thread-safe
 void attention(Config* p, RunState* s, int l, int pos) {
-    int kv_mul = p->n_heads / p->n_kv_heads;
-    int kv_dim = p->n_kv_heads * p->head_dim;
-    uint64_t loff = (uint64_t) (l * p->seq_len * kv_dim);
+    int head_dim = p->head_dim;
+    int kv_mul   = p->n_heads / p->n_kv_heads;
+    int kv_dim   = p->n_kv_heads * head_dim;
+    uint64_t loff = (uint64_t) l * p->seq_len * kv_dim;
 
     for (int h = 0; h < p->n_heads; h++) {
-        // get the query vector for this head
-        float *q = s->q + h * p->head_dim;
-        // attention scores for this head
-        float *att = s->att + h * p->seq_len;
+        float* q   = s->q + h * head_dim;
+        float* att = s->att + h * p->seq_len;
+        float* xb  = s->xb  + h * head_dim;
 
-        // iterate over all timesteps, including the current one
+        // Compute attention scores
         #pragma omp parallel for
         for (int t = 0; t <= pos; t++) {
-            // get the key vector for this head and at this timestep
-            float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
-            // calculate the attention score as the dot product of q and k
-            float score = 0;
-            for (int i = 0; i < p->head_dim; i++)
+            float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
+            float score = 0.0f;
+            for (int i = 0; i < head_dim; i++) {
                 score += q[i] * k[i];
+            }
 
-            // save the score to the attention buffer
-            att[t] = score / sqrtf(p->head_dim);
+            att[t] = score / sqrtf((float)head_dim);
         }
 
-        // softmax the scores to get attention weights, from 0..pos inclusively
+        // Normalize scores to get attention weights
         softmax(att, pos + 1);
 
-        // weighted sum of the values, store back into xb
-        float *xb = s->xb + h * p->head_dim;
-        memset(xb, 0, p->head_dim * sizeof(float));
+        // Initialize output vector for this head
+        memset(xb, 0, sizeof(float) * head_dim);
 
-        #pragma omp parallel for
-        for (int t = 0; t <= pos; t++) {
-            // get the value vector for this head and at this timestep
-            float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
-            // get the attention weight for this timestep
-            float a = att[t];
-            // accumulate the weighted value into xb
-            for (int i = 0; i < p->head_dim; i++)
-                xb[i] += a * v[i];
+        // Accumulate weighted values in thread-safe way
+        #pragma omp parallel
+        {
+            float tmp[head_dim];
+            memset(tmp, 0, sizeof(tmp));
+
+            #pragma omp for
+            for (int t = 0; t <= pos; t++) {
+                float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
+                float a = att[t];
+                for (int i = 0; i < head_dim; i++)
+                    tmp[i] += a * v[i];
+            }
+
+            // Reduce thread-local buffer into shared output
+            for (int i = 0; i < head_dim; i++) {
+                #pragma omp atomic
+                xb[i] += tmp[i];
+            }
         }
     }
 }
@@ -469,41 +483,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         /** 
          * Multi-headed attention
          */
-        #pragma omp parallel for
-        for (int h = 0; h < p->n_heads; h++) {
-            // get the query vector for this head
-            float *q = s->q + h * p->head_dim;
-            // attention scores for this head
-            float *att = s->att + h * p->seq_len;
-            // iterate over all timesteps, including the current one
-            for (int t = 0; t <= pos; t++) {
-                // get the key vector for this head and at this timestep
-                float *k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
-                // calculate the attention score as the dot product of q and k
-                float score = 0;
-                for (int i = 0; i < p->head_dim; i++)
-                    score += q[i] * k[i];
-
-                // save the score to the attention buffer
-                att[t] = score / sqrtf(p->head_dim);
-            }
-
-            // softmax the scores to get attention weights, from 0..pos inclusively
-            softmax(att, pos + 1);
-
-            // weighted sum of the values, store back into xb
-            float *xb = s->xb + h * p->head_dim;
-            memset(xb, 0, p->head_dim * sizeof(float));
-            for (int t = 0; t <= pos; t++) {
-                // get the value vector for this head and at this timestep
-                float *v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * p->head_dim;
-                // get the attention weight for this timestep
-                float a = att[t];
-                // accumulate the weighted value into xb
-                for (int i = 0; i < p->head_dim; i++)
-                    xb[i] += a * v[i];
-            }
-        }
+        attention(p, s, l, pos);
 
         // final matmul to get the output of the attention
         quantize(&s->xq, s->xb, all_heads_dim);
