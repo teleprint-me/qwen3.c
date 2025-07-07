@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 
-extern int GS = 1;
+int GS = 1;
 
 void q8_quantize(Q8Tensor* qt, float* x, int n) {
     const int num_groups = n / GS;
