@@ -88,7 +88,6 @@ typedef struct State {
     // Residual stream
     float* x; // persistent residual (dim)
     float* x_norm; // normalized / projected buffer (n_heads * head_dim)
-    float* att_proj; // attention output before residual (dim)
 
     // Attention workspace
     float* q; // query (n_heads * head_dim)

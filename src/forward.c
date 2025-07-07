@@ -233,11 +233,11 @@ float* forward(Transformer* t, int token, int pos) {
 
         // final matmul to get the output of the attention
         q8_quantize(&s->qx, s->x_norm, proj_dim);
-        matmul(s->att_proj, &s->qx, w->wo + l, proj_dim, p->dim);
+        matmul(s->x_norm, &s->qx, w->wo + l, proj_dim, p->dim);
 
         // residual connection back into x
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->att_proj[i];
+            s->x[i] += s->x_norm[i];
         }
 
         // ffn rmsnorm

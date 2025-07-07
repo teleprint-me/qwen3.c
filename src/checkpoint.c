@@ -222,7 +222,6 @@ bool model_create_state(Transformer* t) {
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
     s->x_norm = calloc(projection, sizeof(float)); // scratch for norm/project
-    s->att_proj = calloc(p->dim, sizeof(float)); // attention output (before residual)
 
     // Attention workspace
     s->q = calloc(projection, sizeof(float));
@@ -239,7 +238,7 @@ bool model_create_state(Transformer* t) {
     s->mlp_in = calloc(hidden_dim, sizeof(float));
     s->mlp_gate = calloc(hidden_dim, sizeof(float));
 
-    // qx.q stores int8_t quantized values of r (projection dim)
+    // qx.q stores int8_t quantized values of x_norm (projection dim)
     s->qx.q = calloc(projection, sizeof(int8_t));
     // qx.s stores per-group scale factors (projection / GS)
     s->qx.s = calloc(projection / GS, sizeof(float));
@@ -248,15 +247,15 @@ bool model_create_state(Transformer* t) {
     s->qh.s = calloc(hidden_dim / GS, sizeof(float));
 
     // Check for allocation failures
-    if (!s->x || !s->x_norm || !s->att_proj || !s->q || !s->att || !s->logits || !s->k_cache
+    if (!s->x || !s->x_norm || !s->q || !s->att || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
         fprintf(stderr, "state_create: allocation failed!\n");
         return false;
     }
 
-    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_proj
-                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
+    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, x_norm
+                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_norm, qx.q
                          (projection / GS) * sizeof(float) + // qx.s
                          hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
                          (hidden_dim / GS) * sizeof(float) + // qh.s
@@ -281,7 +280,6 @@ void model_free_state(Transformer* t) {
     // Residual stream and attention output
     free(s->x);
     free(s->x_norm);
-    free(s->att_proj);
 
     // Attention workspace
     free(s->q);
