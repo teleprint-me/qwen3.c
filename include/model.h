@@ -113,14 +113,49 @@ typedef struct State {
  */
 
 typedef struct Transformer {
-    void* model; // pointer to memory-mapped model
+    void* model; // read-only pointer to memory-mapped model file
     Params params; // model architecture + hyperparameters
     Weights weights; // model weights (quantized + fp32 norms)
     State state; // forward pass scratch space
-    ssize_t size; // size of the memory-mapped model
+    ssize_t size; // size of the memory-mapped model file
 } Transformer;
 
+/**
+ * @brief Construct a Transformer model from a memory-mapped checkpoint file.
+ *
+ * This function encapsulates the entire setup process:
+ * - Maps the checkpoint file into memory via `mmap`
+ * - Parses and validates the `Params` header
+ * - Loads FP32 weights and allocates Q8 quantized tensors
+ * - Allocates and initializes model state buffers
+ *
+ * The returned pointer owns all necessary memory, including:
+ * - Memory-mapped file region (`t->model`)
+ * - Quantized weight tensors
+ * - Dequantized embeddings
+ * - Transformer internal state buffers
+ *
+ * The pointer must be released using `transformer_free()` to avoid leaks.
+ *
+ * @param path              Path to the checkpoint file on disk.
+ * @param override_seq_len  Optional context length override (0 to use checkpoint default).
+ * @return Pointer to a fully constructed Transformer, or NULL on failure.
+ */
 Transformer* transformer_create(const char* path, int override_seq_len);
+
+/**
+ * @brief Frees all memory associated with a Transformer model.
+ *
+ * This includes:
+ * - Quantized and dequantized weight buffers
+ * - Attention, MLP, and cache buffers in the model state
+ * - The memory-mapped checkpoint file
+ * - The Transformer struct itself
+ *
+ * Safe to call on NULL.
+ *
+ * @param t Pointer to a Transformer created by `transformer_create`.
+ */
 void transformer_free(Transformer* t);
 
 #endif // QWEN_MODEL_H
