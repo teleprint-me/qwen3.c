@@ -1,4 +1,4 @@
-/** 
+/**
  * @file src/forward.c
  * @brief Forward pass for Transformer checkpoints
  */
@@ -169,6 +169,30 @@ void attention(Transformer* t, int l, int pos) {
     }
 }
 
+/**
+ *               ┌────────────┐
+ * token ──────▶│ embeddings │──┐
+ *               └────────────┘  │
+ *                               ▼
+ *  ┌────────────────────────────────────────────────┐
+ *  │              Per Layer (32x)                   │
+ *  │                                                │
+ *  │  x ── RMSNorm ── QKV ── Rotary ── Attention    │
+ *  │                     │               │          │
+ *  │                     ▼               ▼          │
+ *  │                FFN w1/w3        Softmax · V    │
+ *  │                     │               │          │
+ *  │                 SwiGLU <─── Scores ─┘          │
+ *  │                     ▼                          │
+ *  │                FFN w2 → add to x               │
+ *  └────────────────────────────────────────────────┘
+ *                        ▼
+ *                   Final RMSNorm
+ *                        ▼
+ *                    Classifier
+ *                        ▼
+ *                      logits
+ */
 float* forward(Transformer* t, int token, int pos) {
     Params* p = &t->params;
     Weights* w = &t->weights;
@@ -179,93 +203,102 @@ float* forward(Transformer* t, int token, int pos) {
     int hidden_dim = p->hidden_dim;
     int proj_dim = p->n_heads * p->head_dim;
 
-    // copy the token embedding into x
+    /**
+     * Input Embedding
+     * Load the embedding vector for the input token into x (residual stream)
+     */
     memcpy(s->x, w->fe + token * p->dim, p->dim * sizeof(float));
 
-    // forward all the layers
+    /**
+     * Layer Loop
+     */
     for (int l = 0; l < p->n_layers; l++) {
-        // KV cache layer offset
+        // KV cache layer offset for current layer and position
         uint64_t loff = l * (uint64_t) p->seq_len * kv_dim;
 
-        // Save KV at this time step (pos) to cache
+        // Slice the cache for this time step
         s->k = s->k_cache + loff + pos * kv_dim;
         s->v = s->v_cache + loff + pos * kv_dim;
 
-        // Normalize the input to attention.
+        /**
+         * Attention RMSNorm
+         * Normalize the input x before computing Q/K/V
+         */
         rmsnorm(s->x_rms_norm, s->x, w->att_rms_norm + l * p->dim, p->dim);
 
-        // Quantize for matmul efficiency.
+        /**
+         * Q/K/V Projection (Quantized Matmuls)
+         */
         q8_quantize(&s->qx, s->x_rms_norm, p->dim);
-
-        // Compute Q, K, V for this timestep.
-        matmul(s->q, &s->qx, w->wq + l, p->dim, proj_dim);
-        matmul(s->k, &s->qx, w->wk + l, p->dim, kv_dim);
-        matmul(s->v, &s->qx, w->wv + l, p->dim, kv_dim);
-
-        float* gq = w->q_rms_norm + l * p->head_dim; // 128 floats
-        float* gk = w->k_rms_norm + l * p->head_dim; // 128 floats
+        matmul(s->q, &s->qx, w->wq + l, p->dim, proj_dim); // Q
+        matmul(s->k, &s->qx, w->wk + l, p->dim, kv_dim); // K
+        matmul(s->v, &s->qx, w->wv + l, p->dim, kv_dim); // V
 
         /**
-         * Q-RMSNorm + rotate each query head
+         * Q & K RMSNorm + Rotary Embedding
          */
+        float* gq = w->q_rms_norm + l * p->head_dim;
+        float* gk = w->k_rms_norm + l * p->head_dim;
+
         for (int h = 0; h < p->n_heads; h++) {
             float* q = s->q + h * p->head_dim;
-
-            rmsnorm(q, q, gq, p->head_dim);
-            rotary(q, p->head_dim, pos);
+            rmsnorm(q, q, gq, p->head_dim); // Normalize each query head
+            rotary(q, p->head_dim, pos); // Apply positional rotation
         }
 
-        /**
-         * K-RMSNorm + rotate each key head
-         */
         for (int h = 0; h < p->n_kv_heads; h++) {
             float* k = s->k + h * p->head_dim;
-
-            rmsnorm(k, k, gk, p->head_dim);
-            rotary(k, p->head_dim, pos);
+            rmsnorm(k, k, gk, p->head_dim); // Normalize each key head
+            rotary(k, p->head_dim, pos); // Apply positional rotation
         }
 
         /**
-         * Multi-headed attention
+         * Multi-Head Attention Computation
          */
-        attention(t, l, pos);
+        attention(t, l, pos); // Uses Q/K/V to compute context → written to x_rms_norm
 
-        // final matmul to get the output of the attention
+        /**
+         * Output Projection + Residual Add
+         */
         q8_quantize(&s->qx, s->x_rms_norm, proj_dim);
         matmul(s->x_rms_norm, &s->qx, w->wo + l, proj_dim, p->dim);
-
-        // residual connection back into x
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->x_rms_norm[i];
+            s->x[i] += s->x_rms_norm[i]; // Add attention output back into residual stream
         }
 
-        // ffn rmsnorm
+        /**
+         * FFN RMSNorm
+         */
         rmsnorm(s->x_rms_norm, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
 
-        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-        // first calculate self.w1(x) and self.w3(x)
+        /**
+         * FFN Input Projections (w1 and w3)
+         */
         q8_quantize(&s->qx, s->x_rms_norm, p->dim);
-        matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim);
-        matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim);
+        matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim); // w1(x)
+        matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim); // w3(x)
 
-        // SwiGLU non-linearity
-        swiglu(s->mlp_in, s->mlp_gate, hidden_dim);
+        /**
+         * SwiGLU Activation
+         */
+        swiglu(s->mlp_in, s->mlp_gate, hidden_dim); // mlp_in = silu(w1) * w3
 
-        // final matmul to get the output of the ffn
+        /**
+         * FFN Output Projection + Residual Add
+         */
         q8_quantize(&s->qh, s->mlp_in, hidden_dim);
         matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
-
-        // residual connection
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->x_rms_norm[i];
+            s->x[i] += s->x_rms_norm[i]; // Add FFN output into residual stream
         }
     }
 
-    // final rmsnorm
-    rmsnorm(s->x, s->x, w->out_rms_norm, p->dim);
+    /**
+     * Final LayerNorm + Output Projection
+     */
+    rmsnorm(s->x, s->x, w->out_rms_norm, p->dim); // Final norm before logits
 
-    // classifier into logits
     q8_quantize(&s->qx, s->x, p->dim);
-    matmul(s->logits, &s->qx, w->cls, p->dim, p->vocab_size);
+    matmul(s->logits, &s->qx, w->cls, p->dim, p->vocab_size); // Final linear classifier
     return s->logits;
 }
