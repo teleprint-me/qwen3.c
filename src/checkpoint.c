@@ -221,7 +221,7 @@ bool model_create_state(Transformer* t) {
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
     s->r = calloc(projection, sizeof(float)); // scratch for norm/project
-    s->att_out = calloc(p->dim, sizeof(float)); // attention output (before residual)
+    s->att_proj = calloc(p->dim, sizeof(float)); // attention output (before residual)
 
     // Attention workspace
     s->q = calloc(projection, sizeof(float));
@@ -247,14 +247,14 @@ bool model_create_state(Transformer* t) {
     s->qh.s = calloc(hidden_dim / GS, sizeof(float));
 
     // Check for allocation failures
-    if (!s->x || !s->r || !s->att_out || !s->q || !s->att || !s->logits || !s->k_cache
+    if (!s->x || !s->r || !s->att_proj || !s->q || !s->att || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
         fprintf(stderr, "state_create: allocation failed!\n");
         return false;
     }
 
-    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_out
+    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_proj
                          projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
                          (projection / GS) * sizeof(float) + // qx.s
                          hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
@@ -280,7 +280,7 @@ void model_free_state(Transformer* t) {
     // Residual stream and attention output
     free(s->x);
     free(s->r);
-    free(s->att_out);
+    free(s->att_proj);
 
     // Attention workspace
     free(s->q);
