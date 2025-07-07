@@ -52,6 +52,9 @@ open_failure:
  * @{
  */
 
+/// @todo Consolidate repeated calculations into params.
+/// @note These should only be done once during initialization.
+///       Otherwise the repeated computations just compound one another over time.
 bool model_read_params(Transformer* t, int override_seq_len) {
     if (!t) {
         return false;
@@ -134,13 +137,13 @@ bool model_read_weights(Transformer* t) {
      * All tensors are shaped [n_layers, dim * out_features] for consistent layout.
      * Matmul kernels must handle reshaping internally.
      */
-    const int projection = p->n_heads * p->head_dim;
+    const int proj_dim = p->n_heads * p->head_dim;
     const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->wq = q8_tensor(&t->model, p->n_layers, p->dim * projection);
+    w->wq = q8_tensor(&t->model, p->n_layers, p->dim * proj_dim);
     w->wk = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
     w->wv = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
-    w->wo = q8_tensor(&t->model, p->n_layers, projection * p->dim); // [proj, dim] format
+    w->wo = q8_tensor(&t->model, p->n_layers, proj_dim * p->dim); // [proj, dim] format
 
     /**
      * Feed-forward weights
@@ -155,7 +158,7 @@ bool model_read_weights(Transformer* t) {
     /**
      * Output classifier
      * If shared_classifier is true, reuse token embedding matrix
-     * (tied weights). Otherwise, allocate separate output projection.
+     * (tied weights). Otherwise, allocate separate output proj_dim.
      */
     w->cls = p->shared_classifier ? w->qe : q8_tensor(&t->model, 1, p->dim * p->vocab_size);
 
@@ -211,20 +214,20 @@ bool model_create_state(Transformer* t) {
     }
 
     const int hidden_dim = p->hidden_dim;
-    const int projection = p->n_heads * p->head_dim; // IO Features
+    const int proj_dim = p->n_heads * p->head_dim; // IO Features
     const int kv_dim = p->n_kv_heads * p->head_dim;
     const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
 
-    assert(0 == projection % GS && "projection must be divisible by GS");
+    assert(0 == proj_dim % GS && "proj_dim must be divisible by GS");
     assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
     assert(0 != cache_len && "Empty cache size");
 
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
-    s->x_norm = calloc(projection, sizeof(float)); // scratch for norm/project
+    s->x_norm = calloc(proj_dim, sizeof(float)); // scratch for norm/project
 
     // Attention workspace
-    s->q = calloc(projection, sizeof(float));
+    s->q = calloc(proj_dim, sizeof(float));
     s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
     s->v = NULL; // They point to the current time step within layer 'l'
     s->att_scores = calloc(p->n_heads * p->seq_len, sizeof(float));
@@ -238,10 +241,10 @@ bool model_create_state(Transformer* t) {
     s->mlp_in = calloc(hidden_dim, sizeof(float));
     s->mlp_gate = calloc(hidden_dim, sizeof(float));
 
-    // qx.q stores int8_t quantized values of x_norm (projection dim)
-    s->qx.q = calloc(projection, sizeof(int8_t));
-    // qx.s stores per-group scale factors (projection / GS)
-    s->qx.s = calloc(projection / GS, sizeof(float));
+    // qx.q stores int8_t quantized values of x_norm (proj_dim dim)
+    s->qx.q = calloc(proj_dim, sizeof(int8_t));
+    // qx.s stores per-group scale factors (proj_dim / GS)
+    s->qx.s = calloc(proj_dim / GS, sizeof(float));
 
     s->qh.q = calloc(hidden_dim, sizeof(int8_t));
     s->qh.s = calloc(hidden_dim / GS, sizeof(float));
@@ -255,8 +258,8 @@ bool model_create_state(Transformer* t) {
     }
 
     size_t total_bytes = p->dim * 3 * sizeof(float) + // x, x_norm
-                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_norm, qx.q
-                         (projection / GS) * sizeof(float) + // qx.s
+                         proj_dim * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_norm, qx.q
+                         (proj_dim / GS) * sizeof(float) + // qx.s
                          hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
                          (hidden_dim / GS) * sizeof(float) + // qh.s
                          p->n_heads * p->seq_len * sizeof(float) + // att_scores
