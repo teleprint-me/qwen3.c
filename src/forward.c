@@ -4,6 +4,8 @@
  */
 
 #include "forward.h"
+#include <math.h>
+#include <string.h>
 
 void rmsnorm(float* out, float* x, float* w, int size) {
     // calculate sum of squares
@@ -124,7 +126,7 @@ void attention(Transformer* t, int l, int pos) {
     for (int h = 0; h < p->n_heads; h++) {
         float* q = s->q + h * head_dim;
         float* att = s->att + h * p->seq_len;
-        float* r = s->r + h * head_dim;
+        float* head_out = s->x_norm + h * head_dim;
 
 // Compute attention scores
 #pragma omp parallel for
@@ -142,7 +144,7 @@ void attention(Transformer* t, int l, int pos) {
         softmax(att, pos + 1);
 
         // Initialize output vector for this head
-        memset(r, 0, sizeof(float) * head_dim);
+        memset(head_out, 0, sizeof(float) * head_dim);
 
 // Accumulate weighted values in thread-safe way
 #pragma omp parallel
@@ -162,7 +164,7 @@ void attention(Transformer* t, int l, int pos) {
             // Reduce thread-local buffer into shared output
             for (int i = 0; i < head_dim; i++) {
 #pragma omp atomic
-                r[i] += tmp[i];
+                head_out[i] += tmp[i];
             }
         }
     }
@@ -174,7 +176,7 @@ float* forward(Transformer* t, int token, int pos) {
     State* s = &t->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
-    int kv_mul = p->n_heads / p->n_kv_heads; // grouped-query attention
+    // int kv_mul = p->n_heads / p->n_kv_heads; // multi-query attention (currently unused)
     int hidden_dim = p->hidden_dim;
     int proj_dim = p->n_heads * p->head_dim;
 
@@ -191,10 +193,10 @@ float* forward(Transformer* t, int token, int pos) {
         s->v = s->v_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->r, s->x, w->att_rms_norm + l * p->dim, p->dim);
+        rmsnorm(s->x_norm, s->x, w->att_rms_norm + l * p->dim, p->dim);
 
         // Quantize for matmul efficiency.
-        q8_quantize(&s->qx, s->r, p->dim);
+        q8_quantize(&s->qx, s->x_norm, p->dim);
 
         // Compute Q, K, V for this timestep.
         matmul(s->q, &s->qx, w->wq + l, p->dim, proj_dim);
@@ -230,7 +232,7 @@ float* forward(Transformer* t, int token, int pos) {
         attention(t, l, pos);
 
         // final matmul to get the output of the attention
-        q8_quantize(&s->qx, s->r, proj_dim);
+        q8_quantize(&s->qx, s->x_norm, proj_dim);
         matmul(s->att_proj, &s->qx, w->wo + l, proj_dim, p->dim);
 
         // residual connection back into x
@@ -239,11 +241,11 @@ float* forward(Transformer* t, int token, int pos) {
         }
 
         // ffn rmsnorm
-        rmsnorm(s->r, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
+        rmsnorm(s->x_norm, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        q8_quantize(&s->qx, s->r, p->dim);
+        q8_quantize(&s->qx, s->x_norm, p->dim);
         matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim);
         matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim);
 
@@ -252,11 +254,11 @@ float* forward(Transformer* t, int token, int pos) {
 
         // final matmul to get the output of the ffn
         q8_quantize(&s->qh, s->mlp_in, hidden_dim);
-        matmul(s->r, &s->qh, w->w2 + l, hidden_dim, p->dim);
+        matmul(s->x_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
 
         // residual connection
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->r[i];
+            s->x[i] += s->x_norm[i];
         }
     }
 

@@ -87,7 +87,7 @@ typedef struct Weights {
 typedef struct State {
     // Residual stream
     float* x; // persistent residual (dim)
-    float* r; // normalized / projected buffer (n_heads * head_dim)
+    float* x_norm; // normalized / projected buffer (n_heads * head_dim)
     float* att_proj; // attention output before residual (dim)
 
     // Attention workspace

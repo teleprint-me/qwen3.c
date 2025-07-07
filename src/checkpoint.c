@@ -1,5 +1,6 @@
 /// @file src/checkpoint.c
 #include "checkpoint.h"
+#include <assert.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -220,7 +221,7 @@ bool model_create_state(Transformer* t) {
 
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
-    s->r = calloc(projection, sizeof(float)); // scratch for norm/project
+    s->x_norm = calloc(projection, sizeof(float)); // scratch for norm/project
     s->att_proj = calloc(p->dim, sizeof(float)); // attention output (before residual)
 
     // Attention workspace
@@ -247,7 +248,7 @@ bool model_create_state(Transformer* t) {
     s->qh.s = calloc(hidden_dim / GS, sizeof(float));
 
     // Check for allocation failures
-    if (!s->x || !s->r || !s->att_proj || !s->q || !s->att || !s->logits || !s->k_cache
+    if (!s->x || !s->x_norm || !s->att_proj || !s->q || !s->att || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
         fprintf(stderr, "state_create: allocation failed!\n");
@@ -279,7 +280,7 @@ void model_free_state(Transformer* t) {
 
     // Residual stream and attention output
     free(s->x);
-    free(s->r);
+    free(s->x_norm);
     free(s->att_proj);
 
     // Attention workspace
