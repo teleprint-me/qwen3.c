@@ -170,7 +170,6 @@ float* forward(Transformer* t, int token, int pos) {
     Weights* w = &t->weights;
     State* s = &t->state;
 
-    float* x = s->x;
     int dim = p->dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
     int kv_mul = p->n_heads / p->n_kv_heads; // grouped-query attention
@@ -178,7 +177,7 @@ float* forward(Transformer* t, int token, int pos) {
     int proj_dim = p->n_heads * p->head_dim;
 
     // copy the token embedding into x
-    memcpy(x, w->fe + token * dim, dim * sizeof(float));
+    memcpy(s->x, w->fe + token * dim, dim * sizeof(float));
 
     // forward all the layers
     for (int l = 0; l < p->n_layers; l++) {
@@ -190,7 +189,7 @@ float* forward(Transformer* t, int token, int pos) {
         s->v = s->v_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->r, x, w->att_rms_norm + l * dim, dim);
+        rmsnorm(s->r, s->x, w->att_rms_norm + l * dim, dim);
 
         // Quantize for matmul efficiency.
         q8_quantize(&s->qx, s->r, dim);
@@ -234,11 +233,11 @@ float* forward(Transformer* t, int token, int pos) {
 
         // residual connection back into x
         for (int i = 0; i < dim; i++) {
-            x[i] += s->att_proj[i];
+            s->x[i] += s->att_proj[i];
         }
 
         // ffn rmsnorm
-        rmsnorm(s->r, x, w->ffn_rms_norm + l * dim, dim);
+        rmsnorm(s->r, s->x, w->ffn_rms_norm + l * dim, dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
@@ -255,15 +254,15 @@ float* forward(Transformer* t, int token, int pos) {
 
         // residual connection
         for (int i = 0; i < dim; i++) {
-            x[i] += s->r[i];
+            s->x[i] += s->r[i];
         }
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w->out_rms_norm, dim);
+    rmsnorm(s->x, s->x, w->out_rms_norm, dim);
 
     // classifier into logits
-    q8_quantize(&s->qx, x, dim);
+    q8_quantize(&s->qx, s->x, dim);
     matmul(s->logits, &s->qx, w->cls, dim, p->vocab_size);
     return s->logits;
 }
