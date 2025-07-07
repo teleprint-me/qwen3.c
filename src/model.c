@@ -10,15 +10,15 @@
  * @section Model State
  */
 
-State* state_create(Params* p) {
-    if (!p) {
-        return NULL;
+bool model_create_state(Transformer* t) {
+    if (!t) {
+        return false;
     }
 
-    State* s = calloc(1, sizeof(State));
-    if (!s) {
-        fprintf(stderr, "state_create: allocation failed!\n");
-        return NULL;
+    Params* p = &t->params;
+    State* s = &t->state;
+    if (!p || !s) {
+        return false;
     }
 
     const int hidden_dim = p->hidden_dim;
@@ -63,7 +63,7 @@ State* state_create(Params* p) {
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
         fprintf(stderr, "state_create: allocation failed!\n");
-        return NULL;
+        return false;
     }
 
     size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_out
@@ -76,10 +76,15 @@ State* state_create(Params* p) {
                          2 * cache_len * sizeof(float); // kv_cache
     fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
 
-    return s;
+    return true;
 }
 
-void state_free(State* s) {
+void model_free_state(Transformer* t) {
+    if (!t) {
+        return;
+    }
+
+    State* s = &t->state;
     if (!s) {
         return;
     }
@@ -105,9 +110,6 @@ void state_free(State* s) {
     free(s->qx.s);
     free(s->qh.q);
     free(s->qh.s);
-
-    // Free the struct
-    free(s);
 }
 
 /** @} */
@@ -116,14 +118,9 @@ void state_free(State* s) {
  * @section Model Weights
  */
 
-Weights* weights_create(Params* p, void* stream) {
-    if (!p || !stream) {
-        return NULL;
-    }
-
-    Weights* w = calloc(1, sizeof(Weights));
-    if (!w) {
-        return NULL;
+bool model_read_weights(Transformer* t) {
+    if (!t || !t->model || 0 == t->size) {
+        return false;
     }
 
     /**
@@ -131,7 +128,9 @@ Weights* weights_create(Params* p, void* stream) {
      * These are read directly from the stream without allocation.
      * Layout order must match export script.
      */
-    float* weights = (float*) stream;
+    Params* p = &t->params;
+    Weights* w = &t->weights;
+    float* weights = (float*) t->model;
 
     w->att_rms_norm = weights;
     weights += p->n_layers * p->dim;
@@ -152,14 +151,13 @@ Weights* weights_create(Params* p, void* stream) {
      * Advance stream to beginning of quantized weights.
      * q8_tensor allocates memory for Q8Tensor and updates the stream pointer.
      */
-    stream = (void*) weights;
+    t->model = (void*) weights;
 
     // Token embeddings (quantized + dequantized)
-    w->qe = q8_tensor(&stream, 1, p->vocab_size * p->dim); // allocates internally
+    w->qe = q8_tensor(&t->model, 1, p->vocab_size * p->dim); // allocates internally
     w->fe = calloc(p->vocab_size * p->dim, sizeof(float)); // explicit malloc (must be freed)
     if (!w->fe) {
-        free(w);
-        return NULL;
+        return false;
     }
 
     q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim);
@@ -172,10 +170,10 @@ Weights* weights_create(Params* p, void* stream) {
     const int projection = p->n_heads * p->head_dim;
     const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->wq = q8_tensor(&stream, p->n_layers, p->dim * projection);
-    w->wk = q8_tensor(&stream, p->n_layers, p->dim * kv_dim);
-    w->wv = q8_tensor(&stream, p->n_layers, p->dim * kv_dim);
-    w->wo = q8_tensor(&stream, p->n_layers, projection * p->dim); // [proj, dim] format
+    w->wq = q8_tensor(&t->model, p->n_layers, p->dim * projection);
+    w->wk = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
+    w->wv = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
+    w->wo = q8_tensor(&t->model, p->n_layers, projection * p->dim); // [proj, dim] format
 
     /**
      * Feed-forward weights
@@ -183,21 +181,27 @@ Weights* weights_create(Params* p, void* stream) {
      */
     const int hidden_dim = p->hidden_dim;
 
-    w->w1 = q8_tensor(&stream, p->n_layers, p->dim * hidden_dim); // w1(x)
-    w->w2 = q8_tensor(&stream, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
-    w->w3 = q8_tensor(&stream, p->n_layers, p->dim * hidden_dim); // w3(x)
+    w->w1 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w1(x)
+    w->w2 = q8_tensor(&t->model, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
+    w->w3 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w3(x)
 
     /**
      * Output classifier
      * If shared_classifier is true, reuse token embedding matrix
      * (tied weights). Otherwise, allocate separate output projection.
      */
-    w->cls = p->shared_classifier ? w->qe : q8_tensor(&stream, 1, p->dim * p->vocab_size);
+    w->cls = p->shared_classifier ? w->qe : q8_tensor(&t->model, 1, p->dim * p->vocab_size);
 
-    return w;
+    return true;
 }
 
-void weights_free(Params* p, Weights* w) {
+void model_free_weights(Transformer* t) {
+    if (!t) {
+        return;
+    }
+
+    Params* p = &t->params;
+    Weights* w = &t->weights;
     if (!p || !w) {
         return;
     }
@@ -222,9 +226,6 @@ void weights_free(Params* p, Weights* w) {
     if (!p->shared_classifier) {
         free(w->cls);
     }
-
-    // Free the struct
-    free(w);
 }
 
 /** @} */
@@ -292,16 +293,36 @@ Transformer* transformer_create(const char* path, int override_seq_len) {
         return NULL;
     }
 
-    // Read and map the model file
     if (!model_read_checkpoint(t, path)) {
+        free(t);
         return NULL;
     }
 
     if (!model_read_params(t, override_seq_len)) {
+        free(t);
+        return NULL;
+    }
+
+    if (!model_read_weights(t)) {
+        free(t);
+        return NULL;
+    }
+
+    if (!model_create_state(t)) {
+        model_free_weights(t);
+        free(t);
         return NULL;
     }
 
     return t;
+}
+
+void transformer_free(Transformer* t) {
+    if (!t) { return; }
+    model_free_state(t);
+    model_free_weights(t);
+    munmap(t->model, t->size);
+    free(t);
 }
 
 /** @} */
