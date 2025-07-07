@@ -1,9 +1,10 @@
 /// @file src/model.c
 #include "model.h"
+#include <stdbool.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <sys/mman.h>
 #include <string.h>
+#include <stdio.h>
 
 /**
  * @section Model State
@@ -232,47 +233,74 @@ void weights_free(Params* p, Weights* w) {
  * @section Transformer Model
  */
 
-void* model_map_checkpoint(const char* path) {
+bool model_read_checkpoint(Transformer* t, const char* path) {
     FILE* file = fopen(path, "rb");
-    if (!file) {return NULL;}
-    if (-1 == fseek(file, 0, SEEK_END)) {fclose(file); return NULL; }
-    long file_size = ftell(file);
-    if (-1 == file_size) { fclose(file); return NULL;}
-    void* checkpoint = mmap(NULL, (ssize_t) file_size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
-    if (!checkpoint) {fclose(file); return NULL;}
+    if (!file) {
+        goto open_failure;
+    }
+
+    if (-1 == fseek(file, 0, SEEK_END)) {
+        goto read_failure;
+    }
+
+    t->size = ftell(file);
+    if (-1 == t->size) {
+        goto read_failure;
+    }
+
+    t->model = mmap(NULL, t->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
+    if (!t->model) {
+        goto read_failure;
+    }
+
+    // Success: Return control flow
     fclose(file);
-    return checkpoint;
+    return true;
+
+    // Failure: Break control flow
+read_failure:
+    fclose(file);
+open_failure:
+    return false;
 }
 
-Params model_map_params(void* checkpoint, int seq_len) {
-    Params params = {0};
-    memcpy(&params, checkpoint, sizeof(Params));
-    if (0x7177656E != params.magic_number) { return params; }
-    if (1 != params.version) { return params; }
-    if (seq_len && seq_len <= params.seq_len) { params.seq_len = seq_len; }
-    GS = params.group_size;
-    return params;
+bool model_read_params(Transformer* t, int override_seq_len) {
+    if (!t) {
+        return false;
+    }
+
+    memcpy(&t->params, t->model, sizeof(Params));
+    if (0x7177656E != t->params.magic_number || 1 != t->params.version) {
+        return false;
+    }
+
+    if (override_seq_len && override_seq_len <= t->params.seq_len) {
+        t->params.seq_len = override_seq_len;
+    }
+
+    GS = t->params.group_size;
+    return true;
 }
 
-Transformer* transformer_create(const char* path, int seq_len) {
-    /// @note We do not need to check seq_len
-    if (!path) { return NULL; }
-
-    // Read and map the model file
-    void* checkpoint = model_read(path); 
-
-    // Read the model file header
-    Params params = {0};
-    memcpy(&params, checkpoint, sizeof(Params));
-    if (0x7177656E != params.magic_number) { return NULL; }
-    if (1 != params.version) { return NULL; }
-    if (seq_len && seq_len <= params.seq_len) { params.seq_len = seq_len; }
-    GS = params.group_size;
+Transformer* transformer_create(const char* path, int override_seq_len) {
+    if (!path) {
+        return NULL;
+    }
 
     Transformer* t = calloc(1, sizeof(Transformer));
-    if (!t) { return NULL; }
-    t->params = params;
-    
+    if (!t) {
+        return NULL;
+    }
+
+    // Read and map the model file
+    if (!model_read_checkpoint(t, path)) {
+        return NULL;
+    }
+
+    if (!model_read_params(t, override_seq_len)) {
+        return NULL;
+    }
+
     return t;
 }
 

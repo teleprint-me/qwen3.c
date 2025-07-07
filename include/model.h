@@ -113,11 +113,11 @@ typedef struct State {
  */
 
 typedef struct Transformer {
-    float* data; // pointer to memory-mapped model weights
+    void* model; // pointer to memory-mapped model
     Params params; // model architecture + hyperparameters
     Weights weights; // model weights (quantized + fp32 norms)
     State state; // forward pass scratch space
-    ssize_t file_size;
+    ssize_t size; // size of the memory-mapped model
 } Transformer;
 
 State* state_create(Params* p);
