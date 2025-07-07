@@ -4,9 +4,13 @@
 #include <stdio.h>
 
 State* state_create(Params* p) {
+    if (!p) {
+        return NULL;
+    }
+
     State* s = calloc(1, sizeof(State));
     if (!s) {
-        fprintf(stderr, "state allocation failed!\n");
+        fprintf(stderr, "state_create: allocation failed!\n");
         return NULL;
     }
 
@@ -51,25 +55,28 @@ State* state_create(Params* p) {
     if (!s->x || !s->r || !s->att_out || !s->q || !s->att || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
-        fprintf(stderr, "state_create: malloc failed!\n");
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "state_create: allocation failed!\n");
+        return NULL;
     }
 
-    size_t total_bytes =
-        p->dim * 3 * sizeof(float) + // x, r, att_out
-        projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
-        (projection / GS) * sizeof(float) + // qx.s
-        hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
-        (hidden_dim / GS) * sizeof(float) + // qh.s
-        p->n_heads * p->seq_len * sizeof(float) + // att
-        p->vocab_size * sizeof(float) + // logits
-        2 * cache_len * sizeof(float); // kv_cache
-    fprintf(stderr, "State memory use: %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_out
+                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
+                         (projection / GS) * sizeof(float) + // qx.s
+                         hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
+                         (hidden_dim / GS) * sizeof(float) + // qh.s
+                         p->n_heads * p->seq_len * sizeof(float) + // att
+                         p->vocab_size * sizeof(float) + // logits
+                         2 * cache_len * sizeof(float); // kv_cache
+    fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
 
     return s;
 }
 
 void state_free(State* s) {
+    if (!s) {
+        return;
+    }
+
     // Residual stream and attention output
     free(s->x);
     free(s->r);
@@ -89,4 +96,55 @@ void state_free(State* s) {
     free(s->qh.q);
     free(s->qh.s);
     free(s);
+}
+
+Weights* weights_create(Params* p, void* stream) {
+    if (!p) {
+        return NULL;
+    }
+    if (!stream) {
+        return NULL;
+    }
+
+    Weights* w = calloc(1, sizeof(Weights));
+    if (!w) {
+        return NULL;
+    }
+
+    // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
+    float* weights = (float*) stream;
+
+    w->att_rms_norm = weights;
+    weights += p->n_layers * p->dim;
+    w->ffn_rms_norm = weights;
+    weights += p->n_layers * p->dim;
+    w->out_rms_norm = weights;
+    weights += p->dim;
+    w->q_rms_norm = weights;
+    weights += p->n_layers * p->head_dim;
+    w->k_rms_norm = weights;
+    weights += p->n_layers * p->head_dim;
+
+    // now read all the quantized weights
+    stream = (void*) weights; // now cast the pointer back to void*
+    w->qe = q8_tensor(&stream, 1, p->vocab_size * p->dim);
+    // dequantize token embedding table
+    w->fe = malloc(p->vocab_size * p->dim * sizeof(float));
+    if (!w->fe) {
+        return NULL;
+    }
+    q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim);
+
+    w->wq = q8_tensor(&stream, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    w->wk = q8_tensor(&stream, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wv = q8_tensor(&stream, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wo = q8_tensor(&stream, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+
+    w->w1 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
+    w->w2 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
+    w->w3 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
+
+    w->cls = p->shared_classifier ? w->qe : q8_tensor(&stream, 1, p->dim * p->vocab_size);
+
+    return w;
 }
