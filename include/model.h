@@ -120,21 +120,7 @@ typedef struct Transformer {
     ssize_t size; // size of the memory-mapped model
 } Transformer;
 
-State* state_create(Params* p);
-void state_free(State* s);
-
-/**
- * @brief Initialize and allocate quantized and fp32 weight tensors from memory-mapped stream.
- *
- * This function assumes `stream` points to a contiguous memory-mapped model checkpoint.
- * All fp32 weights (e.g. RMSNorm parameters) are read first, then the quantized tensors
- * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream pointer.
- *
- * @param p        Pointer to model configuration parameters.
- * @param stream   Pointer to memory-mapped weights block.
- * @return Pointer to allocated Weights struct, or NULL on error.
- */
-Weights* weights_create(Params* p, void* stream);
-void weights_free(Params* p, Weights* w);
+Transformer* transformer_create(const char* path, int override_seq_len);
+void transformer_free(Transformer* t);
 
 #endif // QWEN_MODEL_H

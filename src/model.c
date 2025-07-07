@@ -7,117 +7,82 @@
 #include <stdio.h>
 
 /**
- * @section Model State
+ * @defgroup Private Interface
+ * @{
  */
 
-bool model_create_state(Transformer* t) {
+/**
+ * @section Model Checkpoint
+ */
+
+bool model_read_checkpoint(Transformer* t, const char* path) {
+    FILE* file = fopen(path, "rb");
+    if (!file) {
+        goto open_failure;
+    }
+
+    if (-1 == fseek(file, 0, SEEK_END)) {
+        goto read_failure;
+    }
+
+    t->size = ftell(file);
+    if (-1 == t->size) {
+        goto read_failure;
+    }
+
+    t->model = mmap(NULL, t->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
+    if (!t->model) {
+        goto read_failure;
+    }
+
+    // Success: Return control flow
+    fclose(file);
+    return true;
+
+    // Failure: Break control flow
+read_failure:
+    fclose(file);
+open_failure:
+    return false;
+}
+
+/**
+ * @section Model Params
+ * @{
+ */
+
+bool model_read_params(Transformer* t, int override_seq_len) {
     if (!t) {
         return false;
     }
 
-    Params* p = &t->params;
-    State* s = &t->state;
-    if (!p || !s) {
+    memcpy(&t->params, t->model, sizeof(Params));
+    if (0x7177656E != t->params.magic_number || 1 != t->params.version) {
         return false;
     }
 
-    const int hidden_dim = p->hidden_dim;
-    const int projection = p->n_heads * p->head_dim; // IO Features
-    const int kv_dim = p->n_kv_heads * p->head_dim;
-    const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
-
-    assert(0 == projection % GS && "projection must be divisible by GS");
-    assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
-    assert(0 != cache_len && "Empty cache size");
-
-    // Residual stream and attention output
-    s->x = calloc(p->dim, sizeof(float)); // persistent
-    s->r = calloc(projection, sizeof(float)); // scratch for norm/project
-    s->att_out = calloc(p->dim, sizeof(float)); // attention output (before residual)
-
-    // Attention workspace
-    s->q = calloc(projection, sizeof(float));
-    s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
-    s->v = NULL; // They point to the current time step within layer 'l'
-    s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
-    s->logits = calloc(p->vocab_size, sizeof(float));
-
-    // Key/value memory (shared memory with KV)
-    s->k_cache = calloc(cache_len, sizeof(float));
-    s->v_cache = calloc(cache_len, sizeof(float));
-
-    // MLP
-    s->mlp_in = calloc(hidden_dim, sizeof(float));
-    s->mlp_gate = calloc(hidden_dim, sizeof(float));
-
-    // qx.q stores int8_t quantized values of r (projection dim)
-    s->qx.q = calloc(projection, sizeof(int8_t));
-    // qx.s stores per-group scale factors (projection / GS)
-    s->qx.s = calloc(projection / GS, sizeof(float));
-
-    s->qh.q = calloc(hidden_dim, sizeof(int8_t));
-    s->qh.s = calloc(hidden_dim / GS, sizeof(float));
-
-    // Check for allocation failures
-    if (!s->x || !s->r || !s->att_out || !s->q || !s->att || !s->logits || !s->k_cache
-        || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
-        || !s->qh.s) {
-        fprintf(stderr, "state_create: allocation failed!\n");
-        return false;
+    if (override_seq_len && override_seq_len <= t->params.seq_len) {
+        t->params.seq_len = override_seq_len;
     }
 
-    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_out
-                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
-                         (projection / GS) * sizeof(float) + // qx.s
-                         hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
-                         (hidden_dim / GS) * sizeof(float) + // qh.s
-                         p->n_heads * p->seq_len * sizeof(float) + // att
-                         p->vocab_size * sizeof(float) + // logits
-                         2 * cache_len * sizeof(float); // kv_cache
-    fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
-
+    GS = t->params.group_size;
     return true;
 }
-
-void model_free_state(Transformer* t) {
-    if (!t) {
-        return;
-    }
-
-    State* s = &t->state;
-    if (!s) {
-        return;
-    }
-
-    // Residual stream and attention output
-    free(s->x);
-    free(s->r);
-    free(s->att_out);
-
-    // Attention workspace
-    free(s->q);
-    free(s->att);
-    free(s->logits);
-
-    // Key/value memory (shared memory with KV)
-    free(s->k_cache);
-    free(s->v_cache);
-
-    // MLP
-    free(s->mlp_in);
-    free(s->mlp_gate);
-    free(s->qx.q);
-    free(s->qx.s);
-    free(s->qh.q);
-    free(s->qh.s);
-}
-
-/** @} */
 
 /**
  * @section Model Weights
  */
 
+ /**
+ * @brief Initialize and allocate quantized and fp32 weight tensors from memory-mapped stream.
+ *
+ * This function assumes `stream` points to a contiguous memory-mapped model checkpoint.
+ * All fp32 weights (e.g. RMSNorm parameters) are read first, then the quantized tensors
+ * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream pointer.
+ *
+ * @param t        Pointer to Transformer model.
+ * @return true on success, or false on error.
+ */
 bool model_read_weights(Transformer* t) {
     if (!t || !t->model || 0 == t->size) {
         return false;
@@ -228,60 +193,122 @@ void model_free_weights(Transformer* t) {
     }
 }
 
-/** @} */
-
 /**
- * @section Transformer Model
+ * @section Model State
  */
 
-bool model_read_checkpoint(Transformer* t, const char* path) {
-    FILE* file = fopen(path, "rb");
-    if (!file) {
-        goto open_failure;
-    }
-
-    if (-1 == fseek(file, 0, SEEK_END)) {
-        goto read_failure;
-    }
-
-    t->size = ftell(file);
-    if (-1 == t->size) {
-        goto read_failure;
-    }
-
-    t->model = mmap(NULL, t->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
-    if (!t->model) {
-        goto read_failure;
-    }
-
-    // Success: Return control flow
-    fclose(file);
-    return true;
-
-    // Failure: Break control flow
-read_failure:
-    fclose(file);
-open_failure:
-    return false;
-}
-
-bool model_read_params(Transformer* t, int override_seq_len) {
+bool model_create_state(Transformer* t) {
     if (!t) {
         return false;
     }
 
-    memcpy(&t->params, t->model, sizeof(Params));
-    if (0x7177656E != t->params.magic_number || 1 != t->params.version) {
+    Params* p = &t->params;
+    State* s = &t->state;
+    if (!p || !s) {
         return false;
     }
 
-    if (override_seq_len && override_seq_len <= t->params.seq_len) {
-        t->params.seq_len = override_seq_len;
+    const int hidden_dim = p->hidden_dim;
+    const int projection = p->n_heads * p->head_dim; // IO Features
+    const int kv_dim = p->n_kv_heads * p->head_dim;
+    const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
+
+    assert(0 == projection % GS && "projection must be divisible by GS");
+    assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
+    assert(0 != cache_len && "Empty cache size");
+
+    // Residual stream and attention output
+    s->x = calloc(p->dim, sizeof(float)); // persistent
+    s->r = calloc(projection, sizeof(float)); // scratch for norm/project
+    s->att_out = calloc(p->dim, sizeof(float)); // attention output (before residual)
+
+    // Attention workspace
+    s->q = calloc(projection, sizeof(float));
+    s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
+    s->v = NULL; // They point to the current time step within layer 'l'
+    s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
+    s->logits = calloc(p->vocab_size, sizeof(float));
+
+    // Key/value memory (shared memory with KV)
+    s->k_cache = calloc(cache_len, sizeof(float));
+    s->v_cache = calloc(cache_len, sizeof(float));
+
+    // MLP
+    s->mlp_in = calloc(hidden_dim, sizeof(float));
+    s->mlp_gate = calloc(hidden_dim, sizeof(float));
+
+    // qx.q stores int8_t quantized values of r (projection dim)
+    s->qx.q = calloc(projection, sizeof(int8_t));
+    // qx.s stores per-group scale factors (projection / GS)
+    s->qx.s = calloc(projection / GS, sizeof(float));
+
+    s->qh.q = calloc(hidden_dim, sizeof(int8_t));
+    s->qh.s = calloc(hidden_dim / GS, sizeof(float));
+
+    // Check for allocation failures
+    if (!s->x || !s->r || !s->att_out || !s->q || !s->att || !s->logits || !s->k_cache
+        || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
+        || !s->qh.s) {
+        fprintf(stderr, "state_create: allocation failed!\n");
+        return false;
     }
 
-    GS = t->params.group_size;
+    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, r, att_out
+                         projection * (2 * sizeof(float) + sizeof(int8_t)) + // q, r, qx.q
+                         (projection / GS) * sizeof(float) + // qx.s
+                         hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
+                         (hidden_dim / GS) * sizeof(float) + // qh.s
+                         p->n_heads * p->seq_len * sizeof(float) + // att
+                         p->vocab_size * sizeof(float) + // logits
+                         2 * cache_len * sizeof(float); // kv_cache
+    fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+
     return true;
 }
+
+void model_free_state(Transformer* t) {
+    if (!t) {
+        return;
+    }
+
+    State* s = &t->state;
+    if (!s) {
+        return;
+    }
+
+    // Residual stream and attention output
+    free(s->x);
+    free(s->r);
+    free(s->att_out);
+
+    // Attention workspace
+    free(s->q);
+    free(s->att);
+    free(s->logits);
+
+    // Key/value memory (shared memory with KV)
+    free(s->k_cache);
+    free(s->v_cache);
+
+    // MLP
+    free(s->mlp_in);
+    free(s->mlp_gate);
+    free(s->qx.q);
+    free(s->qx.s);
+    free(s->qh.q);
+    free(s->qh.s);
+}
+
+/** @} */
+
+/**
+ * @defgroup Public Interface
+ * @{
+ */
+
+/**
+ * @section Transformer Model
+ */
 
 Transformer* transformer_create(const char* path, int override_seq_len) {
     if (!path) {
