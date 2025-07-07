@@ -50,6 +50,9 @@ def serialize_int8(file, tensor):
     file.write(b)
 
 
+# TODO: Group size is the number of elements per thread
+# NOTE: In model.py, this is equivalent to model_parallel_size
+# This is not obvious at first glance and should be renamed for clarity.
 def quantize_q80(w, group_size):
     """
     takes a tensor and returns the Q8_0 quantized version
