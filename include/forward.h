@@ -1,6 +1,6 @@
-/** 
+/**
  * @file include/forward.h
- * @brief Forward pass for Transformer checkpoints
+ * @brief Transformer forward pass and core operations (Qwen-compatible).
  */
 
 #ifndef QWEN_FORWARD_H
@@ -9,101 +9,135 @@
 #include "q8.h"
 #include "checkpoint.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
- * @brief RMS normalization followed by elementwise scaling using a learned weight vector w.
- * @param out Output buffer (same size as x)
- * @param x Input vector to normalize
- * @param w Weight vector (learned scale parameters)
- * @param size Length of the vectors
+ * Core Transformer Operations
+ */
+
+/**
+ * @brief Performs a root-mean-square normalization followed by learned scaling.
+ *
+ * Each element is normalized as:
+ *     out[i] = w[i] * x[i] / sqrt(mean(x^2) + ε)
+ *
+ * @param out  Output buffer (same size as x)
+ * @param x    Input vector to normalize
+ * @param w    Weight vector of learned scaling parameters
+ * @param size Number of elements in x and w
  */
 void rmsnorm(float* out, float* x, float* w, int size);
 
 /**
- * @brief Convert logits (e.g. attention scores) into a probability distribution.
- * @param x Input vector (overwritten in-place with softmaxed values)
- * @param size Number of elements in vector
+ * @brief Applies softmax in-place to a vector.
+ *
+ * Converts raw scores into a probability distribution using:
+ *     softmax(x_i) = exp(x_i - max(x)) / sum_j(exp(x_j - max(x)))
+ *
+ * @param x    Input vector (overwritten with normalized output)
+ * @param size Number of elements in x
  */
 void softmax(float* x, int size);
 
 /**
- * @brief Multiply quantized matrix W[d × n] by quantized input x[n], output float[d].
+ * @brief Performs matrix-vector multiplication with quantized inputs and weights.
  *
- * Computes: out[i] = sum_j ( x.q[j] * w.q[i*n + j] ) * x.s[j/GS] * w.s[(i*n + j)/GS]
+ * Computes:
+ *     out[i] = ∑_j (x.q[j] * w.q[i*n + j]) * x.s[j/GS] * w.s[(i*n + j)/GS]
  *
- * This function assumes both x and w are quantized with group size GS.
- * The inner product is accumulated in int32 then dequantized.
+ * Both operands are assumed to use the same group size `GS` for quantization.
  *
- * @param out Output vector of size d (float32)
+ * @param out Output vector (size d, float32)
  * @param x   Quantized input vector of size n
- * @param w   Quantized weight matrix of shape [d][n] (flattened row-major)
+ * @param w   Quantized weight matrix [d × n] (row-major layout)
  * @param n   Input dimension
  * @param d   Output dimension
  */
 void matmul(float* out, Q8Tensor* x, Q8Tensor* w, int n, int d);
 
 /**
- * @brief Applies rotary positional embeddings (RoPE) in-place to a vector x.
+ * @brief Applies rotary positional embeddings in-place.
  *
- * Assumes x is split into real and imaginary halves:
- *   - x[0 .. head_dim/2 - 1] → real part
- *   - x[head_dim/2 .. head_dim - 1] → imaginary part
+ * Each input vector is split into two halves and rotated in 2D space:
+ *     angle_i = pos * 1000000^(-i / (head_dim / 2))
  *
- * Each complex pair (real, imag) is rotated by a fixed angle depending on position:
- *
- *   angle_i = pos * (1000000 ^ -(i / (head_dim/2)))
- *
- * This rotates each vector slice by a different frequency — used for relative attention.
- *
- * @param x         Attention vector (query or key), modified in-place
- * @param head_dim  Dimension of the attention head (must be even)
- * @param pos       Token position in the sequence
+ * @param x        Input buffer (query or key vector), modified in-place
+ * @param head_dim Head dimension (must be even)
+ * @param pos      Token position in the sequence
  */
 void rotary(float* x, int head_dim, int pos);
 
+/**
+ * Activation Functions
+ */
+
+/**
+ * @brief Sigmoid function: σ(x) = 1 / (1 + exp(-x))
+ *
+ * @param x Input scalar
+ * @return  Sigmoid activation
+ */
 float sigmoid(float x);
+
+/**
+ * @brief SiLU activation: silu(x) = x * sigmoid(x)
+ *
+ * @param x Input scalar
+ * @return  SiLU activation
+ */
 float silu(float x);
 
 /**
- * @brief Applies the SwiGLU activation function element-wise.
+ * @brief SwiGLU non-linearity: x1 = silu(x1) ⊙ x3
  *
- * Computes:
+ * Element-wise:
  *     x1[i] = silu(x1[i]) * x3[i]
  *
- * where silu(x) = x / (1 + exp(-x)) is the Sigmoid Linear Unit,
- * and ⊙ represents element-wise multiplication.
+ * Commonly used in transformer FFNs (Gated Linear Units).
  *
- * This is typically used in transformer FFNs where:
- *     - x1 holds the result of W₁x
- *     - x3 holds the result of W₃x
- *
- * The result is stored in-place in x1.
- *
- * @param x1   Pointer to first input array (will be overwritten).
- * @param x3   Pointer to second input array (gating vector).
- * @param size Number of elements in both arrays.
+ * @param x1   First input vector (will be overwritten with result)
+ * @param x3   Second input vector (gating vector)
+ * @param size Number of elements
  */
 void swiglu(float* x1, float* x3, int size);
 
 /**
- * @brief Performs multi-head self-attention for a single transformer layer at a given time step.
+ * Attention & Forward
+ */
+
+/**
+ * @brief Multi-head self-attention for a single transformer layer.
  *
- * For each head:
- *   - Computes dot products between current query vector q and past keys k_i
- *   - Applies softmax over dot products to get attention weights
- *   - Computes a weighted sum over the corresponding values v_i
- *   - Stores the result in s->r (attention output buffer)
+ * - Assumes rotary embeddings and RMSNorm already applied to q/k.
+ * - Updates attention buffer and writes attention output to s->r.
+ * - Accumulates across all heads using causal masking.
  *
- * Assumes:
- *   - Queries for this position already populated in s->q
- *   - Keys/values populated in s->k_cache / s->v_cache
- *   - Rotary embeddings already applied to q before this call
- *
- * @param t    Pointer to transformer instance.
+ * @param t    Pointer to Transformer instance
  * @param l    Layer index
- * @param pos  Current token position (for causal masking)
+ * @param pos  Current sequence position
  */
 void attention(Transformer* t, int l, int pos);
 
+/**
+ * @brief Runs a full forward pass through the transformer.
+ *
+ * Computes:
+ *     logits = model(x₀, ..., x_pos)
+ *
+ * Final output is the unnormalized logits at position `pos`,
+ * written to `state->logits` and returned.
+ *
+ * @param t     Pointer to Transformer instance
+ * @param token Input token ID at current timestep
+ * @param pos   Current position in the sequence
+ * @return      Pointer to logits buffer (float[p->vocab_size])
+ */
 float* forward(Transformer* t, int token, int pos);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // QWEN_FORWARD_H
