@@ -81,13 +81,16 @@ void state_free(State* s) {
     free(s->x);
     free(s->r);
     free(s->att_out);
+
     // Attention workspace
     free(s->q);
     free(s->att);
     free(s->logits);
+
     // Key/value memory (shared memory with KV)
     free(s->k_cache);
     free(s->v_cache);
+
     // MLP
     free(s->mlp_in);
     free(s->mlp_gate);
@@ -95,14 +98,12 @@ void state_free(State* s) {
     free(s->qx.s);
     free(s->qh.q);
     free(s->qh.s);
+
     free(s);
 }
 
 Weights* weights_create(Params* p, void* stream) {
-    if (!p) {
-        return NULL;
-    }
-    if (!stream) {
+    if (!p || !stream) {
         return NULL;
     }
 
@@ -111,40 +112,101 @@ Weights* weights_create(Params* p, void* stream) {
         return NULL;
     }
 
-    // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
+    /**
+     * FP32 Weights (RMSNorms + LayerNorms)
+     * These are read directly from the stream without allocation.
+     * Layout order must match export script.
+     */
     float* weights = (float*) stream;
 
     w->att_rms_norm = weights;
     weights += p->n_layers * p->dim;
+
     w->ffn_rms_norm = weights;
     weights += p->n_layers * p->dim;
+
     w->out_rms_norm = weights;
     weights += p->dim;
+
     w->q_rms_norm = weights;
     weights += p->n_layers * p->head_dim;
+
     w->k_rms_norm = weights;
     weights += p->n_layers * p->head_dim;
 
-    // now read all the quantized weights
-    stream = (void*) weights; // now cast the pointer back to void*
-    w->qe = q8_tensor(&stream, 1, p->vocab_size * p->dim);
-    // dequantize token embedding table
-    w->fe = malloc(p->vocab_size * p->dim * sizeof(float));
+    /**
+     * Advance stream to beginning of quantized weights.
+     * q8_tensor allocates memory for Q8Tensor and updates the stream pointer.
+     */
+    stream = (void*) weights;
+
+    // Token embeddings (quantized + dequantized)
+    w->qe = q8_tensor(&stream, 1, p->vocab_size * p->dim); // allocates internally
+    w->fe = calloc(p->vocab_size * p->dim, sizeof(float)); // explicit malloc (must be freed)
     if (!w->fe) {
+        free(w);
         return NULL;
     }
+
     q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim);
 
-    w->wq = q8_tensor(&stream, p->n_layers, p->dim * (p->n_heads * p->head_dim));
-    w->wk = q8_tensor(&stream, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wv = q8_tensor(&stream, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wo = q8_tensor(&stream, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    /**
+     * Attention weights
+     * All tensors are shaped [n_layers, dim * out_features] for consistent layout.
+     * Matmul kernels must handle reshaping internally.
+     */
+    const int projection = p->n_heads * p->head_dim;
+    const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->w1 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
-    w->w2 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
-    w->w3 = q8_tensor(&stream, p->n_layers, p->dim * p->hidden_dim);
+    w->wq = q8_tensor(&stream, p->n_layers, p->dim * projection);
+    w->wk = q8_tensor(&stream, p->n_layers, p->dim * kv_dim);
+    w->wv = q8_tensor(&stream, p->n_layers, p->dim * kv_dim);
+    w->wo = q8_tensor(&stream, p->n_layers, projection * p->dim); // [proj, dim] format
 
+    /**
+     * Feed-forward weights
+     * All three MLP branches use [hidden_dim × dim] layout in export
+     */
+    const int hidden_dim = p->hidden_dim;
+
+    w->w1 = q8_tensor(&stream, p->n_layers, p->dim * hidden_dim); // w1(x)
+    w->w2 = q8_tensor(&stream, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
+    w->w3 = q8_tensor(&stream, p->n_layers, p->dim * hidden_dim); // w3(x)
+
+    /**
+     * Output classifier
+     * If shared_classifier is true, reuse token embedding matrix
+     * (tied weights). Otherwise, allocate separate output projection.
+     */
     w->cls = p->shared_classifier ? w->qe : q8_tensor(&stream, 1, p->dim * p->vocab_size);
 
     return w;
+}
+
+void weights_free(Params* p, Weights* w) {
+    if (!p || !w) {
+        return;
+    }
+
+    // Token embeddings
+    free(w->qe);
+    free(w->fe);
+
+    // Attention weights
+    free(w->wq);
+    free(w->wk);
+    free(w->wv);
+    free(w->wo);
+
+    // Feed-forward weights
+    free(w->w1);
+    free(w->w2);
+    free(w->w3);
+
+    // Output classifier
+    if (!p->shared_classifier) {
+        free(w->cls);
+    }
+
+    free(w);
 }
