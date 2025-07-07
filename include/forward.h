@@ -1,5 +1,8 @@
-/// @file include/forward.h
-/// @brief Forward pass for Transformer checkpoints
+/** 
+ * @file include/forward.h
+ * @brief Forward pass for Transformer checkpoints
+ */
+
 #ifndef QWEN_FORWARD_H
 #define QWEN_FORWARD_H
 
@@ -100,5 +103,7 @@ void swiglu(float* x1, float* x3, int size);
  * @param pos  Current token position (for causal masking)
  */
 void attention(Transformer* t, int l, int pos);
+
+float* forward(Transformer* t, int token, int pos);
 
 #endif // QWEN_FORWARD_H

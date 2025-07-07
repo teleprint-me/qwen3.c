@@ -1,6 +1,9 @@
-/// @file src/forward.c
-#include "q8.h"
-#include "checkpoint.h"
+/** 
+ * @file src/forward.c
+ * @brief Forward pass for Transformer checkpoints
+ */
+
+#include "forward.h"
 
 void rmsnorm(float* out, float* x, float* w, int size) {
     // calculate sum of squares
