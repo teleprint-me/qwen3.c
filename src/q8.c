@@ -46,7 +46,7 @@ Q8Tensor* q8_tensor(void** b, int n, int size) {
         return NULL;
     }
 
-#pragma omp parallel for
+    // Buffer must be read linearly
     for (int i = 0; i < n; i++) {
         // map q8 values
         qt[i].q = (int8_t*) c;
