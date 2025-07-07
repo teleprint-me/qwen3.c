@@ -73,12 +73,13 @@ bool model_read_params(Transformer* t, int override_seq_len) {
  * @section Model Weights
  */
 
- /**
+/**
  * @brief Initialize and allocate quantized and fp32 weight tensors from memory-mapped stream.
  *
  * This function assumes `stream` points to a contiguous memory-mapped model checkpoint.
  * All fp32 weights (e.g. RMSNorm parameters) are read first, then the quantized tensors
- * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream pointer.
+ * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream
+ * pointer.
  *
  * @param t        Pointer to Transformer model.
  * @return true on success, or false on error.
@@ -349,7 +350,10 @@ malloc_failure:
 }
 
 void transformer_free(Transformer* t) {
-    if (!t) { return; }
+    if (!t) {
+        return;
+    }
+
     model_free_state(t);
     model_free_weights(t);
     munmap(t->model, t->size);
