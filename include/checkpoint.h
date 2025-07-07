@@ -13,8 +13,8 @@
  * @ref https://huggingface.co/collections/Qwen/qwen3-67dd247413f0e2e4f653967f
  */
 
-#ifndef QWEN_MODEL_H
-#define QWEN_MODEL_H
+#ifndef QWEN_CKPT_H
+#define QWEN_CKPT_H
 
 #include "q8.h"
 #include <sys/types.h>
@@ -158,4 +158,4 @@ Transformer* transformer_create(const char* path, int override_seq_len);
  */
 void transformer_free(Transformer* t);
 
-#endif // QWEN_MODEL_H
+#endif // QWEN_CKPT_H
