@@ -126,7 +126,7 @@ void attention(Transformer* t, int l, int pos) {
     for (int h = 0; h < p->n_heads; h++) {
         float* q = s->q + h * head_dim;
         float* att_scores = s->att_scores + h * p->seq_len;
-        float* head_out = s->x_norm + h * head_dim;
+        float* head_out = s->x_rms_norm + h * head_dim;
 
 // Compute attention scores
 #pragma omp parallel for
@@ -192,10 +192,10 @@ float* forward(Transformer* t, int token, int pos) {
         s->v = s->v_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->x_norm, s->x, w->att_rms_norm + l * p->dim, p->dim);
+        rmsnorm(s->x_rms_norm, s->x, w->att_rms_norm + l * p->dim, p->dim);
 
         // Quantize for matmul efficiency.
-        q8_quantize(&s->qx, s->x_norm, p->dim);
+        q8_quantize(&s->qx, s->x_rms_norm, p->dim);
 
         // Compute Q, K, V for this timestep.
         matmul(s->q, &s->qx, w->wq + l, p->dim, proj_dim);
@@ -231,20 +231,20 @@ float* forward(Transformer* t, int token, int pos) {
         attention(t, l, pos);
 
         // final matmul to get the output of the attention
-        q8_quantize(&s->qx, s->x_norm, proj_dim);
-        matmul(s->x_norm, &s->qx, w->wo + l, proj_dim, p->dim);
+        q8_quantize(&s->qx, s->x_rms_norm, proj_dim);
+        matmul(s->x_rms_norm, &s->qx, w->wo + l, proj_dim, p->dim);
 
         // residual connection back into x
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->x_norm[i];
+            s->x[i] += s->x_rms_norm[i];
         }
 
         // ffn rmsnorm
-        rmsnorm(s->x_norm, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
+        rmsnorm(s->x_rms_norm, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        q8_quantize(&s->qx, s->x_norm, p->dim);
+        q8_quantize(&s->qx, s->x_rms_norm, p->dim);
         matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim);
         matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim);
 
@@ -253,11 +253,11 @@ float* forward(Transformer* t, int token, int pos) {
 
         // final matmul to get the output of the ffn
         q8_quantize(&s->qh, s->mlp_in, hidden_dim);
-        matmul(s->x_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
+        matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
 
         // residual connection
         for (int i = 0; i < p->dim; i++) {
-            s->x[i] += s->x_norm[i];
+            s->x[i] += s->x_rms_norm[i];
         }
     }
 

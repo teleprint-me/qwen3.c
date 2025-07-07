@@ -86,25 +86,29 @@ typedef struct Weights {
  */
 typedef struct State {
     // Residual stream
-    float* x; // persistent residual (dim)
-    float* x_norm; // normalized / projected buffer (n_heads * head_dim)
+    float* x; // Persistent residual (dim)
+    float* x_rms_norm; // RMSNorm(x), reused in att and ffn (n_heads * head_dim)
 
     // Attention workspace
-    float* q; // query (n_heads * head_dim)
-    float* k; // key   (n_kv_heads * head_dim)
-    float* v; // value (n_kv_heads * head_dim)
-    float* att_scores; // attention scores (n_heads * seq_len)
-    float* logits; // final output logits (vocab_size)
+    float* q; // Query (n_heads * head_dim)
+    float* k; // Key   (n_kv_heads * head_dim)
+    float* v; // Value (n_kv_heads * head_dim)
+    float* att_scores; // Attention scores (n_heads * seq_len)
+
+    // Feed-forward network
+    float* mlp_in; // w1(x) = mlp_in (hidden_dim)
+    float* mlp_gate; // w3(x) = mlp_gate (hidden_dim)
+
+    // Output
+    float* logits; // Final output logits (vocab_size)
 
     // Key/value cache
-    float* k_cache; // (n_layers, seq_len, kv_dim)
-    float* v_cache; // (n_layers, seq_len, kv_dim)
+    float* k_cache; // Cached keys (n_layers, seq_len, kv_dim)
+    float* v_cache; // Cached values (n_layers, seq_len, kv_dim)
 
-    // FFN
-    float* mlp_in; // result of w1(x) (hidden_dim)
-    float* mlp_gate; // result of w3(x) (hidden_dim)
-    Q8Tensor qx; // quantized residual input (dim)
-    Q8Tensor qh; // quantized mlp_in (hidden_dim)
+    // Quantized buffers
+    Q8Tensor qx; // Quantized input to attention (dim)
+    Q8Tensor qh; // Quantized input to FFN (hidden_dim)
 } State;
 
 /**
