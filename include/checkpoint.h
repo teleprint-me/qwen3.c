@@ -1,5 +1,5 @@
 /**
- * @file include/model.h
+ * @file include/checkpoint.h
  *
  * Qwen3 has the following features:
  *   - Type: Causal Language Models

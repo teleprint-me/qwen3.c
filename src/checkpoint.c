@@ -1,5 +1,5 @@
-/// @file src/model.c
-#include "model.h"
+/// @file src/checkpoint.c
+#include "checkpoint.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/mman.h>
