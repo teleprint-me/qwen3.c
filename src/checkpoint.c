@@ -227,7 +227,7 @@ bool model_create_state(Transformer* t) {
     s->q = calloc(projection, sizeof(float));
     s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
     s->v = NULL; // They point to the current time step within layer 'l'
-    s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
+    s->att_scores = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
 
     // Key/value memory (shared memory with KV)
@@ -247,7 +247,7 @@ bool model_create_state(Transformer* t) {
     s->qh.s = calloc(hidden_dim / GS, sizeof(float));
 
     // Check for allocation failures
-    if (!s->x || !s->x_norm || !s->q || !s->att || !s->logits || !s->k_cache
+    if (!s->x || !s->x_norm || !s->q || !s->att_scores || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
         fprintf(stderr, "state_create: allocation failed!\n");
@@ -259,7 +259,7 @@ bool model_create_state(Transformer* t) {
                          (projection / GS) * sizeof(float) + // qx.s
                          hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
                          (hidden_dim / GS) * sizeof(float) + // qh.s
-                         p->n_heads * p->seq_len * sizeof(float) + // att
+                         p->n_heads * p->seq_len * sizeof(float) + // att_scores
                          p->vocab_size * sizeof(float) + // logits
                          2 * cache_len * sizeof(float); // kv_cache
     fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
@@ -283,7 +283,7 @@ void model_free_state(Transformer* t) {
 
     // Attention workspace
     free(s->q);
-    free(s->att);
+    free(s->att_scores);
     free(s->logits);
 
     // Key/value memory (shared memory with KV)

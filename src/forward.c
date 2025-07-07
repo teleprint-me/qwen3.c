@@ -125,7 +125,7 @@ void attention(Transformer* t, int l, int pos) {
 
     for (int h = 0; h < p->n_heads; h++) {
         float* q = s->q + h * head_dim;
-        float* att = s->att + h * p->seq_len;
+        float* att_scores = s->att_scores + h * p->seq_len;
         float* head_out = s->x_norm + h * head_dim;
 
 // Compute attention scores
@@ -137,11 +137,11 @@ void attention(Transformer* t, int l, int pos) {
                 score += q[j] * k[j];
             }
 
-            att[i] = score / sqrtf((float) head_dim);
+            att_scores[i] = score / sqrtf((float) head_dim);
         }
 
         // Normalize scores to get attention weights
-        softmax(att, pos + 1);
+        softmax(att_scores, pos + 1);
 
         // Initialize output vector for this head
         memset(head_out, 0, sizeof(float) * head_dim);
@@ -155,9 +155,8 @@ void attention(Transformer* t, int l, int pos) {
 #pragma omp for
             for (int i = 0; i <= pos; i++) {
                 float* v = s->v_cache + loff + i * kv_dim + (h / kv_mul) * head_dim;
-                float a = att[i];
                 for (int j = 0; j < head_dim; j++) {
-                    tmp[j] += a * v[j];
+                    tmp[j] += att_scores[i] * v[j];
                 }
             }
 

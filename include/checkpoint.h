@@ -93,7 +93,7 @@ typedef struct State {
     float* q; // query (n_heads * head_dim)
     float* k; // key   (n_kv_heads * head_dim)
     float* v; // value (n_kv_heads * head_dim)
-    float* att; // attention scores (n_heads * seq_len)
+    float* att_scores; // attention scores (n_heads * seq_len)
     float* logits; // final output logits (vocab_size)
 
     // Key/value cache
