@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+/**
+ * @section Model State
+ */
+
 State* state_create(Params* p) {
     if (!p) {
         return NULL;
@@ -102,6 +106,12 @@ void state_free(State* s) {
     // Free the struct
     free(s);
 }
+
+/** @} */
+
+/**
+ * @section Model Weights
+ */
 
 Weights* weights_create(Params* p, void* stream) {
     if (!p || !stream) {
@@ -213,3 +223,5 @@ void weights_free(Params* p, Weights* w) {
     // Free the struct
     free(w);
 }
+
+/** @} */
