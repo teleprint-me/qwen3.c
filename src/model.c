@@ -325,6 +325,7 @@ Transformer* transformer_create(const char* path, int override_seq_len) {
         goto read_failure;
     }
 
+    void* model_base = t->model; // save the pointer
     if (!model_read_params(t, override_seq_len)) {
         goto read_failure;
     }
@@ -338,6 +339,7 @@ Transformer* transformer_create(const char* path, int override_seq_len) {
     }
 
     // Success: Return control flow
+    t->model = model_base; // rewind to start
     return t;
 
     // Failure: Break control flow
