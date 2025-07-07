@@ -290,31 +290,35 @@ Transformer* transformer_create(const char* path, int override_seq_len) {
 
     Transformer* t = calloc(1, sizeof(Transformer));
     if (!t) {
-        return NULL;
+        goto malloc_failure;
     }
 
     if (!model_read_checkpoint(t, path)) {
-        free(t);
-        return NULL;
+        goto read_failure;
     }
 
     if (!model_read_params(t, override_seq_len)) {
-        free(t);
-        return NULL;
+        goto read_failure;
     }
 
     if (!model_read_weights(t)) {
-        free(t);
-        return NULL;
+        goto read_failure;
     }
 
     if (!model_create_state(t)) {
-        model_free_weights(t);
-        free(t);
-        return NULL;
+        goto state_failure;
     }
 
+    // Success: Return control flow
     return t;
+
+    // Failure: Break control flow
+state_failure:
+    model_free_weights(t);
+read_failure:
+    free(t);
+malloc_failure:
+    return NULL;
 }
 
 void transformer_free(Transformer* t) {
