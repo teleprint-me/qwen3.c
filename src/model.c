@@ -99,6 +99,7 @@ void state_free(State* s) {
     free(s->qh.q);
     free(s->qh.s);
 
+    // Free the struct
     free(s);
 }
 
@@ -188,8 +189,9 @@ void weights_free(Params* p, Weights* w) {
         return;
     }
 
-    // Token embeddings
+    // Free Q8Tensor arrays (do NOT free .q or .s — those are memory-mapped!)
     free(w->qe);
+    // Dequantized token embeddings were malloc'd
     free(w->fe);
 
     // Attention weights
@@ -203,10 +205,11 @@ void weights_free(Params* p, Weights* w) {
     free(w->w2);
     free(w->w3);
 
-    // Output classifier
+    // Classifier weights: only free if not shared
     if (!p->shared_classifier) {
         free(w->cls);
     }
 
+    // Free the struct
     free(w);
 }
