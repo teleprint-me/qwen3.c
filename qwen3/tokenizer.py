@@ -3,15 +3,17 @@
 @brief Converts a Tokenizer to a custom binary format.
 """
 
-from qwen3.model import Transformer
+import json
+import math
+import struct
+from dataclasses import dataclass
+from pathlib import Path
+
+from jinja2 import Template
 from tokenizers import Tokenizer
 from transformers import AutoTokenizer
-from jinja2 import Template
-import json
-from pathlib import Path
-import struct
-import math
-from dataclasses import dataclass
+
+from qwen3.model import Transformer
 
 #
 # Jinja2 Template Conversion
