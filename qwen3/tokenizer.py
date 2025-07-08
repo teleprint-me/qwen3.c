@@ -12,31 +12,39 @@ from pathlib import Path
 import struct
 import math
 from typing import Iterable
+from dataclasses import dataclass
 
 #
 # Jinja2 Template Conversion
 #
 
+@dataclass
+class TemplateConfig:
+    suffix: str
+    messages: list[dict[str, str]]
+    enable_thinking: bool
+
+
 # TODO: Add a psuedo-template for tool calling
-def template_config() -> tuple[str, list[dict[str, str]], bool]:
-    msgs_base = [{"role": "user", "content": "%s"}]
-    msgs_sys = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
-    return [  # (filename_suffix, messages, enable_thinking)
-        ("", msgs_base, False),
-        (".with-thinking", msgs_base, True),
-        (".with-system", msgs_sys, False),
-        (".with-system-and-thinking", msgs_sys, True),
+def template_config() -> list[TemplateConfig]:
+    base = [{"role": "user", "content": "%s"}]
+    system = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
+    return [
+        TemplateConfig("", base, False),
+        TemplateConfig(".with-thinking", base, True),
+        TemplateConfig(".with-system", system, False),
+        TemplateConfig(".with-system-and-thinking", system, True),
     ]
 
 
 def template_render(tokenizer: Tokenizer) -> Iterable[str, str]:
     print(tokenizer.chat_template)
     template = Template(tokenizer.chat_template)    
-    for suffix, messages, enable_thinking in template_config():
-        yield suffix, template.render(
-            messages=messages,
+    for config in template_config():
+        yield config.suffix, template.render(
+            messages=config.messages,
             add_generation_prompt=True,
-            enable_thinking=enable_thinking,
+            enable_thinking=config.enable_thinking,
         )
 
 def template_write(tokenizer: Tokenizer, output_file: str) -> None:
