@@ -16,7 +16,7 @@ from torch import Tensor
 from jinja2 import Template
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
+from tokenizers import Tokenizer
 from qwen3.model import ModelArgs, Transformer
 
 # -----------------------------------------------------------------------------
@@ -210,11 +210,10 @@ def unicode_to_bytes(token: str) -> bytes:
     return b"".join(uint8)
 
 
-def build_tokenizer(model: Transformer, output_file: str):
-    # Load tokenizer (adjust as needed)
-    tokenizer = model.tokenizer
+def build_tokenizer(model: Transformer, input_dir: str, output_file: str) -> Tokenizer:
+    tokenizer = AutoTokenizer.from_pretrained(input_dir)
 
-    # Get ID → token mapping
+    # Get ID to token mapping
     vocab = tokenizer.get_vocab()
     id_to_token: dict[int, str] = {v: k for k, v in vocab.items()}
     token_to_id: dict[str, int] = [id_to_token[i] for i in sorted(id_to_token)]
@@ -266,8 +265,10 @@ def build_tokenizer(model: Transformer, output_file: str):
 
     print(f"Written tokenizer model to {output_file}.tokenizer")
 
+    return tokenizer
 
-def build_prompts(model: Transformer, output_file: str) -> None:
+
+def build_prompts(tokenizer: Tokenizer, output_file: str) -> None:
     msgs_base = [{"role": "user", "content": "%s"}]
     msgs_sys = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
     configs = [  # (filename_suffix, messages, enable_thinking)
@@ -277,8 +278,8 @@ def build_prompts(model: Transformer, output_file: str) -> None:
         (".with-system-and-thinking", msgs_sys, True),
     ]
 
-    print(model.tokenizer.chat_template)
-    template = Template(model.tokenizer.chat_template)
+    print(tokenizer.chat_template)
+    template = Template(tokenizer.chat_template)
     for suffix, messages, enable_thinking in configs:
         print(suffix, messages, enable_thinking)
         rendered = template.render(
@@ -326,7 +327,6 @@ def load_params(input_dir: str) -> ModelArgs:
 def load_model(input_dir: str) -> Transformer:
     params = load_params(input_dir)
     model = Transformer(params)
-    model.tokenizer = AutoTokenizer.from_pretrained(input_dir)
 
     state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
     model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])

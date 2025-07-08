@@ -15,6 +15,6 @@ if __name__ == "__main__":
 
     # Convert Qwen3 from pytorch to Q8 binary file
     model = load_model(args.input_dir)
-    build_tokenizer(model, args.output_file)
-    build_prompts(model, args.output_file)
+    tokenizer = build_tokenizer(model, args.input_dir, args.output_file)
+    build_prompts(tokenizer, args.output_file)
     model_export(model, args.output_file)
