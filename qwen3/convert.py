@@ -204,7 +204,7 @@ def internal_to_bytes(U2B, token_str: str) -> bytes:
     )
 
 
-def build_tokenizer(model, file):
+def build_tokenizer(model: Transformer, output_file: str):
     # Build the reverse table once
     B2U = bytes_to_unicode()
     U2B = {u: b for b, u in B2U.items()}
@@ -250,7 +250,7 @@ def build_tokenizer(model, file):
     max_token_length = max(len(t) for t in all_tokens)
 
     # Write to binary
-    with open(file + ".tokenizer", "wb") as out_f:
+    with open(output_file + ".tokenizer", "wb") as out_f:
         # Header: max_token_length, bos_token_id, eos_token_id
         out_f.write(struct.pack("<I", max_token_length))
         out_f.write(struct.pack("<I", model.params.bos_id))
@@ -262,24 +262,17 @@ def build_tokenizer(model, file):
             out_f.write(struct.pack("<I", len(token_bytes)))  # 4 bytes: token length
             out_f.write(token_bytes)  # UTF-8 bytes
 
-    print(f"Written tokenizer model to {file}.tokenizer")
+    print(f"Written tokenizer model to {output_file}.tokenizer")
 
 
-def build_prompts(model, file):
-    configs = [
-        # (filename_suffix, messages, enable_thinking)
-        ("", [{"role": "user", "content": "%s"}], False),
-        (".with-thinking", [{"role": "user", "content": "%s"}], True),
-        (
-            ".with-system",
-            [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}],
-            False,
-        ),
-        (
-            ".with-system-and-thinking",
-            [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}],
-            True,
-        ),
+def build_prompts(model: Transformer, output_file: str) -> None:
+    msgs_base = [{"role": "user", "content": "%s"}]
+    msgs_sys = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
+    configs = [  # (filename_suffix, messages, enable_thinking)
+        ("", msgs_base, True),
+        (".with-thinking", msgs_base, False),
+        (".with-system", msgs_sys, True),
+        (".with-system-and-thinking", msgs_sys, False),
     ]
 
     template = Template(model.tokenizer.chat_template)
@@ -289,7 +282,9 @@ def build_prompts(model, file):
             add_generation_prompt=True,
             enable_thinking=enable_thinking,
         )
-        path = f"{file}.template{suffix}"
+        path = f"{output_file}.template{suffix}"
+        print(path)
+        print(rendered)
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(rendered)
 
@@ -299,6 +294,7 @@ def build_prompts(model, file):
 #
 # Load / import functions
 #
+
 
 def load_params(input_dir: str) -> ModelArgs:
     params = ModelArgs()
@@ -317,7 +313,7 @@ def load_params(input_dir: str) -> ModelArgs:
     params.max_seq_len = config_json.get("max_position_embeddings", 40960)
     params.head_dim = config_json.get("head_dim", params.dim // params.n_heads)
     params.bos_id = config_json.get("bos_token_id", 151643)
-    params.eos_id = config_json.get("eos_token_id", 151645) 
+    params.eos_id = config_json.get("eos_token_id", 151645)
 
     print(params)
     return params
