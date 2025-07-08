@@ -8,9 +8,11 @@ import math
 import os
 import struct
 from pathlib import Path
+from io import BufferedWriter
 
 import numpy as np
 import torch
+from torch import Tensor
 from jinja2 import Template
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -21,24 +23,24 @@ from qwen3.model import ModelArgs, Transformer
 # common utilities
 
 
-def serialize_fp32(file, tensor):
+def serialize_fp32(buffer: BufferedWriter, w: Tensor) -> None:
     """writes one fp32 tensor to file that is open in wb mode"""
-    d = tensor.detach().cpu().view(-1).to(torch.float32).numpy()
+    d = w.detach().cpu().view(-1).to(torch.float32).numpy()
     b = struct.pack(f"{len(d)}f", *d)
-    file.write(b)
+    buffer.write(b)
 
 
-def serialize_int8(file, tensor):
+def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
     """writes one int8 tensor to file that is open in wb mode"""
-    d = tensor.detach().cpu().view(-1).numpy().astype(np.int8)
+    d = w.detach().cpu().view(-1).numpy().astype(np.int8)
     b = struct.pack(f"{len(d)}b", *d)
-    file.write(b)
+    buffer.write(b)
 
 
 # TODO: Group size is the number of elements per thread
 # NOTE: In model.py, this is equivalent to model_parallel_size
 # This is not obvious at first glance and should be renamed for clarity.
-def quantize_q80(w, group_size):
+def quantize_q80(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
     """
     takes a tensor and returns the Q8_0 quantized version
     i.e. symmetric quantization into int8, range [-127,127]
@@ -65,7 +67,7 @@ def quantize_q80(w, group_size):
     return int8val, scale, maxerr
 
 
-def model_export(model, output_file, group_size=64):
+def model_export(model: Transformer, output_file: str, group_size: int = 64) -> None:
     """
     Export the model weights in Q8_0 into .bin file to be read from C.
     That is:
@@ -183,7 +185,7 @@ def model_export(model, output_file, group_size=64):
 ## Tokenizer functions
 
 
-def bytes_to_unicode():
+def bytes_to_unicode() -> dict[int, str]:
     """Reference GPT-2 byte→Unicode map."""
     bs = list(range(ord("!"), ord("~") + 1))
     bs += list(range(ord("¡"), ord("¬") + 1))
@@ -198,7 +200,7 @@ def bytes_to_unicode():
     return dict(zip(bs, map(chr, cs)))
 
 
-def internal_to_bytes(U2B, token_str: str) -> bytes:
+def internal_to_bytes(U2B: dict[str, int], token_str: str) -> bytes:
     return b"".join(
         bytes([U2B[ch]]) if ch in U2B else ch.encode("utf-8") for ch in token_str
     )
