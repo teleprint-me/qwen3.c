@@ -84,17 +84,17 @@ def template_write(tokenizer: Tokenizer, output_file: str) -> None:
 
 def bytes_to_unicode() -> dict[int, str]:
     """Generate a GPT-2 Byte to Unicode map."""
-    bs = list(range(ord("!"), ord("~") + 1))
-    bs += list(range(ord("¡"), ord("¬") + 1))
-    bs += list(range(ord("®"), ord("ÿ") + 1))
-    cs = bs[:]
-    n = 0
+    base = list(range(ord("!"), ord("~") + 1))
+    base += list(range(ord("¡"), ord("¬") + 1))
+    base += list(range(ord("®"), ord("ÿ") + 1))
+    codepoints = base[:]
+    offset = 0
     for b in range(256):
-        if b not in bs:
-            bs.append(b)
-            cs.append(256 + n)
-            n += 1
-    return dict(zip(bs, map(chr, cs)))
+        if b not in base:
+            base.append(b)
+            codepoints.append(256 + offset)
+            offset += 1  # Added a new byte
+    return dict(zip(base, map(chr, codepoints)))
 
 
 def unicode_to_bytes(token: str) -> bytes:
