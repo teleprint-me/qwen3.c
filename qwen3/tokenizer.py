@@ -23,6 +23,7 @@ from qwen3.model import Transformer
 # - If thinking is disabled, the special tokens are **included**.
 #
 
+
 @dataclass
 class TemplateConfig:
     suffix: str
@@ -42,6 +43,7 @@ def template_config() -> list[TemplateConfig]:
         TemplateConfig(".with-system-and-thinking", system, True),
     ]
 
+
 def template_render(tokenizer: Tokenizer) -> dict[str, str]:
     print("[Template] Rendering chat completion templates.")
     print(tokenizer.chat_template)
@@ -54,6 +56,7 @@ def template_render(tokenizer: Tokenizer) -> dict[str, str]:
         )
         for cfg in template_config()
     }
+
 
 def template_write(tokenizer: Tokenizer, output_file: str) -> None:
     print("[Template] Writing to standard output.")
@@ -69,6 +72,7 @@ def template_write(tokenizer: Tokenizer, output_file: str) -> None:
 # UTF-8 Unicode Conversion
 #
 
+
 def bytes_to_unicode() -> dict[int, str]:
     """Generate a GPT-2 Byte to Unicode map."""
     bs = list(range(ord("!"), ord("~") + 1))
@@ -82,6 +86,7 @@ def bytes_to_unicode() -> dict[int, str]:
             cs.append(256 + n)
             n += 1
     return dict(zip(bs, map(chr, cs)))
+
 
 def unicode_to_bytes(token: str) -> bytes:
     """Convert a token to UTF-8 byte sequence"""
