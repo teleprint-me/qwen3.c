@@ -98,14 +98,16 @@ def bytes_to_unicode() -> dict[int, str]:
 
 
 def unicode_to_bytes(token: str) -> bytes:
-    """Convert a token to UTF-8 byte sequence"""
+    """Convert a token to UTF-8 byte sequence."""
     # Invert keys and values
     token_to_id: dict[str, int] = {t: i for i, t in bytes_to_unicode().items()}
-    # Map characters to uint8_t (standard unicode byte)
+    # Map standard unicode bytes
     codepoints: list[int] = []
     for char in token:
         if char in token_to_id:
             codepoints.append(bytes([token_to_id[char]]))
+        # else: # @warning Enabling this will have consequences down the pipeline.
+        #     codepoints.append(char.encode("utf-8"))  # unmapped unicode
     # Merge converted byte sequence
     return b"".join(codepoints)
 
@@ -114,26 +116,31 @@ def unicode_to_bytes(token: str) -> bytes:
 # HuggingFace Tokenizer Conversion
 #
 
+@dataclass
+class Vocab:
+    token_to_id: dict[str, int]
+    id_to_token: dict[int, str]
+    merges: list
+    scores: list
+    ranks: dict
 
-def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
+
+def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
     # Get ID to token mapping
-    vocab = tokenizer.get_vocab()
-    id_to_token: dict[int, str] = {v: k for k, v in vocab.items()}
-    token_to_id: dict[str, int] = [id_to_token[i] for i in sorted(id_to_token)]
+    vocab = Vocab()
+    vocab.id_to_token = {v: k for k, v in tokenizer.get_vocab().items()}
+    vocab.token_to_id = [vocab.id_to_token[i] for i in sorted(vocab.id_to_token)]
 
-    tokenizer_path = Path(tokenizer.name_or_path)
-    tokenizer_json_path = tokenizer_path / "tokenizer.json"
-
-    with open(tokenizer_json_path, "r", encoding="utf-8") as f:
-        tokenizer_data = json.load(f)
-
-    # Extract vocab and merge rules
-    vocab = tokenizer_data["model"]["vocab"]
-    merges = tokenizer_data["model"]["merges"]
+    tokenizer_path = Path(tokenizer.name_or_path) / "tokenizer.json"
+    with open(tokenizer_path, "r", encoding="utf-8") as f:
+        tokenizer_json = json.load(f)
+        merges = tokenizer_json["model"]["merges"]
 
     # Build merge rank table
+    for i, merge in merges:
+        rank = tuple(merge if isinstance(merge, list) else merge.split())
     merge_rank = {
-        "".join(tuple(merge if isinstance(merge, list) else merge.split())): i
+        "".join(): i
         for i, merge in enumerate(merges)
     }
 
@@ -153,6 +160,9 @@ def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
 
     max_token_length = max(len(t) for t in token_to_id)
 
+
+def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
+    vocab = tokenizer_vocab(tokenizer)
     # Write to binary
     with open(output_file + ".tokenizer", "wb") as out_f:
         # Header: max_token_length, bos_token_id, eos_token_id
