@@ -170,28 +170,32 @@ void attention(Transformer* t, int l, int pos) {
 }
 
 /**
- *               ┌────────────┐
- * token ──────▶│ embeddings │──┐
- *               └────────────┘  │
- *                               ▼
- *  ┌────────────────────────────────────────────────┐
- *  │              Per Layer (32x)                   │
- *  │                                                │
- *  │  x ── RMSNorm ── QKV ── Rotary ── Attention    │
- *  │                     │               │          │
- *  │                     ▼               ▼          │
- *  │                FFN w1/w3        Softmax · V    │
- *  │                     │               │          │
- *  │                 SwiGLU <─── Scores ─┘          │
- *  │                     ▼                          │
- *  │                FFN w2 → add to x               │
- *  └────────────────────────────────────────────────┘
- *                        ▼
- *                   Final RMSNorm
- *                        ▼
- *                    Classifier
- *                        ▼
- *                      logits
+ *             ┌────────────┐
+ * token ────▶│ embeddings │
+ *             └────────────┘
+ *                   ▼
+ *  ┌────────────────────────────────────────┐
+ *  │          Per Layer (32x)               │
+ *  │                                        │
+ *  │ x ─ RMSNorm ─ QKV ─ Rotary ─ Attention │
+ *  │                │               │       │
+ *  │                ▼               ▼       │
+ *  │           FFN w1/w3        Softmax · V │
+ *  │                │               │       │
+ *  │            SwiGLU <─── Scores ─┘       │
+ *  │                ▼                       │
+ *  │           FFN w2 → add to x            │
+ *  └────────────────────────────────────────┘
+ *                   ▼
+ *            ┌───────────────┐
+ *            | Final RMSNorm |
+ *            └───────────────┘
+ *                   ▼
+ *             ┌────────────┐
+ *             | Classifier |
+ *             └────────────┘
+ *                   ▼
+ *                 logits
  */
 float* forward(Transformer* t, int token, int pos) {
     Params* p = &t->params;
