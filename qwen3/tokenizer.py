@@ -130,7 +130,7 @@ class Vocab:
     eos_id: int
 
 
-def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[int, str]:
+def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[str, int]:
     tokenizer_path = Path(tokenizer.name_or_path) / "tokenizer.json"
     with open(tokenizer_path, "r", encoding="utf-8") as f:
         tokenizer_json = json.load(f)
@@ -138,8 +138,9 @@ def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[int, str]:
 
     rank_table = {}
     for id, merge in enumerate(merges):
-        token = tuple(merge if isinstance(merge, list) else merge.split())
-        rank_table[id] = "".join(token)
+        pair = tuple(merge if isinstance(merge, list) else merge.split())
+        token = "".join(pair)
+        rank_table[token] = id
 
     return rank_table
 
