@@ -253,8 +253,8 @@ def build_tokenizer(model, file):
     with open(file + ".tokenizer", "wb") as out_f:
         # Header: max_token_length, bos_token_id, eos_token_id
         out_f.write(struct.pack("<I", max_token_length))
-        out_f.write(struct.pack("<I", model.bos_token_id))
-        out_f.write(struct.pack("<I", model.eos_token_id))
+        out_f.write(struct.pack("<I", model.params.bos_id))
+        out_f.write(struct.pack("<I", model.params.eos_id))
 
         for id, token in enumerate(all_tokens):
             token_bytes = internal_to_bytes(U2B, token)
@@ -296,43 +296,41 @@ def build_prompts(model, file):
         print(f"Created template: {path}")
 
 
-# -----------------------------------------------------------------------------
+#
 # Load / import functions
+#
 
+def load_params(input_dir: str) -> ModelArgs:
+    params = ModelArgs()
 
-def load_model(input_dir):
-    # load HF model
-    model = AutoModelForCausalLM.from_pretrained(input_dir)
-    state_dict = model.state_dict()
-
-    # convert config to ModelArgs
-    config = ModelArgs()
-
-    with open(os.path.join(input_dir, "config.json"), "r") as f:
+    config_path = os.path.join(input_dir, "config.json")
+    with open(config_path, "r") as f:
         config_json = json.load(f)
 
-    config.dim = config_json["hidden_size"]
-    config.n_layers = config_json["num_hidden_layers"]
-    config.n_heads = config_json["num_attention_heads"]
-    config.n_kv_heads = config_json["num_key_value_heads"]
-    config.vocab_size = config_json["vocab_size"]
-    config.hidden_dim = config_json["intermediate_size"]
-    config.norm_eps = config_json["rms_norm_eps"]
-    config.max_seq_len = config_json["max_position_embeddings"]
-    config.head_dim = config_json.get("head_dim", config.dim // config.n_heads)
+    params.dim = config_json.get("hidden_size", 2048)
+    params.n_layers = config_json.get("num_hidden_layers", 28)
+    params.n_heads = config_json.get("num_attention_heads", 16)
+    params.n_kv_heads = config_json.get("num_key_value_heads", 8)
+    params.vocab_size = config_json.get("vocab_size", 151936)
+    params.hidden_dim = config_json.get("intermediate_size", 6144)
+    params.norm_eps = config_json.get("rms_norm_eps", 1e-06)
+    params.max_seq_len = config_json.get("max_position_embeddings", 40960)
+    params.head_dim = config_json.get("head_dim", params.dim // params.n_heads)
+    params.bos_id = config_json.get("bos_token_id", 151643)
+    params.eos_id = config_json.get("eos_token_id", 151645) 
 
-    print(config)
+    print(params)
+    return params
 
-    # create a new Transformer object and set weights
-    model = Transformer(config)
 
+def load_model(input_dir: str) -> Transformer:
+    params = load_params(input_dir)
+    model = Transformer(params)
+    model.tokenizer = AutoTokenizer.from_pretrained(input_dir)
+
+    state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
     model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])
     model.norm.weight = nn.Parameter(state_dict["model.norm.weight"])
-
-    model.tokenizer = AutoTokenizer.from_pretrained(input_dir)
-    model.bos_token_id = config_json.get("bos_token_id", 0)
-    model.eos_token_id = config_json.get("eos_token_id", 0)
-
     for layer in model.layers:
         i = layer.layer_id
         layer.attention_norm.weight = nn.Parameter(
