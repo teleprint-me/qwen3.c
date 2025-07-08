@@ -11,11 +11,14 @@ import json
 from pathlib import Path
 import struct
 import math
-from typing import Iterable
 from dataclasses import dataclass
 
 #
 # Jinja2 Template Conversion
+#
+# @warning Special tokens are handled inversely due to model behavior.
+# - If thinking is enabled, the special tokens for reasoning are **excluded**.
+# - If thinking is disabled, the special tokens are **included**.
 #
 
 @dataclass
@@ -27,6 +30,7 @@ class TemplateConfig:
 
 # TODO: Add a psuedo-template for tool calling
 def template_config() -> list[TemplateConfig]:
+    print("[Template] Loading configuration.")
     base = [{"role": "user", "content": "%s"}]
     system = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
     return [
@@ -36,26 +40,27 @@ def template_config() -> list[TemplateConfig]:
         TemplateConfig(".with-system-and-thinking", system, True),
     ]
 
-
-def template_render(tokenizer: Tokenizer) -> Iterable[str, str]:
+def template_render(tokenizer: Tokenizer) -> dict[str, str]:
+    print("[Template] Rendering chat completion templates.")
     print(tokenizer.chat_template)
-    template = Template(tokenizer.chat_template)    
-    for config in template_config():
-        yield config.suffix, template.render(
-            messages=config.messages,
+    template = Template(tokenizer.chat_template)
+    return {
+        cfg.suffix: template.render(
+            messages=cfg.messages,
             add_generation_prompt=True,
-            enable_thinking=config.enable_thinking,
+            enable_thinking=cfg.enable_thinking,
         )
+        for cfg in template_config()
+    }
 
 def template_write(tokenizer: Tokenizer, output_file: str) -> None:
-    for suffix, template in template_render(tokenizer):
+    print("[Template] Writing to standard output.")
+    rendered = template_render(tokenizer)
+    for suffix, text in rendered.items():
         path = f"{output_file}.template{suffix}"
-        print(path, template)
-    
         with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write(template)
-
-        print(f"Created template: {path}")
+            f.write(text)
+        print(f"[Template] Wrote {path}")
 
 
 #
