@@ -269,14 +269,16 @@ def build_prompts(model: Transformer, output_file: str) -> None:
     msgs_base = [{"role": "user", "content": "%s"}]
     msgs_sys = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
     configs = [  # (filename_suffix, messages, enable_thinking)
-        ("", msgs_base, True),
-        (".with-thinking", msgs_base, False),
-        (".with-system", msgs_sys, True),
-        (".with-system-and-thinking", msgs_sys, False),
+        ("", msgs_base, False),
+        (".with-thinking", msgs_base, True),
+        (".with-system", msgs_sys, False),
+        (".with-system-and-thinking", msgs_sys, True),
     ]
 
+    print(model.tokenizer.chat_template)
     template = Template(model.tokenizer.chat_template)
     for suffix, messages, enable_thinking in configs:
+        print(suffix, messages, enable_thinking)
         rendered = template.render(
             messages=messages,
             add_generation_prompt=True,
