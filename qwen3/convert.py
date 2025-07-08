@@ -1,6 +1,6 @@
 """
 @file qwen3.convert
-@brief This script has functions and utilties for model conversion.
+@brief Implements model conversion for Qwen3ForCausalLM architectures.
 """
 
 import json
