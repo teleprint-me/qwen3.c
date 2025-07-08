@@ -33,3 +33,4 @@ add_library(qwen3 SHARED
 )
 target_include_directories("qwen3" PUBLIC include)
 target_link_libraries("qwen3" PUBLIC m)
+add_subdirectory(examples)
