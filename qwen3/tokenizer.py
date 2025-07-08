@@ -88,10 +88,10 @@ def bytes_to_unicode() -> dict[int, str]:
     base += list(range(ord("¡"), ord("¬") + 1))
     base += list(range(ord("®"), ord("ÿ") + 1))
     codepoints = base[:]
-    offset = 0
-    for b in range(256):
-        if b not in base:
-            base.append(b)
+    offset = 0  # Track added bytes
+    for char in range(256):
+        if char not in base:
+            base.append(char)
             codepoints.append(256 + offset)
             offset += 1  # Added a new byte
     return dict(zip(base, map(chr, codepoints)))
@@ -100,11 +100,14 @@ def bytes_to_unicode() -> dict[int, str]:
 def unicode_to_bytes(token: str) -> bytes:
     """Convert a token to UTF-8 byte sequence"""
     # Invert keys and values
-    utob = {u: b for b, u in bytes_to_unicode().items()}
+    token_to_id: dict[str, int] = {token: id for id, token in bytes_to_unicode().items()}
     # Map characters to uint8_t (standard unicode byte)
-    int8 = [bytes([utob[ch]]) if ch in utob else ch.encode("utf-8") for ch in token]
+    codepoints: list[int] = []
+    for char in token:
+        if char in token_to_id:
+            codepoints.append(bytes([token_to_id[char]]))
     # Merge converted byte sequence
-    return b"".join(int8)
+    return b"".join(codepoints)
 
 
 #
