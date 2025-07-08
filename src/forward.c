@@ -119,7 +119,7 @@ void attention(Transformer* t, int l, int pos) {
     State* s = &t->state;
 
     int head_dim = p->head_dim;
-    int kv_mul = p->n_heads / p->n_kv_heads;
+    int kv_mul = p->n_heads / p->n_kv_heads; // multi-query attention
     int kv_dim = p->n_kv_heads * head_dim;
     uint64_t loff = (uint64_t) l * p->seq_len * kv_dim;
 
@@ -203,7 +203,6 @@ float* forward(Transformer* t, int token, int pos) {
     State* s = &t->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
-    // int kv_mul = p->n_heads / p->n_kv_heads; // multi-query attention (currently unused)
     int hidden_dim = p->hidden_dim;
     int proj_dim = p->n_heads * p->head_dim;
 
