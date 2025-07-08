@@ -100,7 +100,7 @@ def bytes_to_unicode() -> dict[int, str]:
 def unicode_to_bytes(token: str) -> bytes:
     """Convert a token to UTF-8 byte sequence"""
     # Invert keys and values
-    token_to_id: dict[str, int] = {token: id for id, token in bytes_to_unicode().items()}
+    token_to_id: dict[str, int] = {t: i for i, t in bytes_to_unicode().items()}
     # Map characters to uint8_t (standard unicode byte)
     codepoints: list[int] = []
     for char in token:
