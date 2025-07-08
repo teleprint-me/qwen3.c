@@ -18,19 +18,21 @@ from typing import Iterable
 #
 
 # TODO: Add a psuedo-template for tool calling
-def template_render(tokenizer: Tokenizer) -> Iterable[str, str]:
+def template_config() -> tuple[str, list[dict[str, str]], bool]:
     msgs_base = [{"role": "user", "content": "%s"}]
     msgs_sys = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
-    configs = [  # (filename_suffix, messages, enable_thinking)
+    return [  # (filename_suffix, messages, enable_thinking)
         ("", msgs_base, False),
         (".with-thinking", msgs_base, True),
         (".with-system", msgs_sys, False),
         (".with-system-and-thinking", msgs_sys, True),
     ]
 
+
+def template_render(tokenizer: Tokenizer) -> Iterable[str, str]:
     print(tokenizer.chat_template)
     template = Template(tokenizer.chat_template)    
-    for suffix, messages, enable_thinking in configs:
+    for suffix, messages, enable_thinking in template_config():
         yield suffix, template.render(
             messages=messages,
             add_generation_prompt=True,
