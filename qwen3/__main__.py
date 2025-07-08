@@ -6,12 +6,16 @@
 import argparse
 from qwen3.convert import load_model, build_tokenizer, build_prompts, model_export
 
-if __name__ == "__main__":
-    # Parse CLI parameters
+
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("output_file", type=str, help="The output file path.")
     parser.add_argument("input_dir", type=str, help="The input dir path.")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
 
     # Convert Qwen3 from pytorch to Q8 binary file
     model = load_model(args.input_dir)
