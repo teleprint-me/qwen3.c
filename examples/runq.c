@@ -570,9 +570,9 @@ typedef struct {
     char **vocab;
     float *merge_scores;
     int vocab_size;
-    unsigned int max_token_length;
-    unsigned int bos_token_id;
-    unsigned int eos_token_id;
+    int max_token_length;
+    int bos_token_id;
+    int eos_token_id;
     char prompt_template[1024];
     char system_prompt_template[1024];
 } Tokenizer;
@@ -954,7 +954,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char
     int8_t user_turn = 1; // user starts
     int next;        // will store the next token in the sequence
     int token;       // stores the current token to feed into the transformer
-    int prev_token;
+    // int prev_token;
     int pos = 0;     // position in the sequence
 
     while (1) {
@@ -1076,7 +1076,7 @@ int main(int argc, char *argv[]) {
     // parameter validation/overrides
     if (rng_seed <= 0) rng_seed = (unsigned int)time(NULL);
     if (temperature < 0) temperature = 0;
-    if (topp < 0 || 1.0 < topp) topp = 0.9;
+    if (topp < 0.0f || 1.0f < topp) topp = 0.9f;
 
     // build the Transformer via the model .bin file
     Transformer transformer;
