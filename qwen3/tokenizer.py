@@ -116,33 +116,44 @@ def unicode_to_bytes(token: str) -> bytes:
 # HuggingFace Tokenizer Conversion
 #
 
+
+# NOTE: This needs to be simplified (minimalism wins here)
 @dataclass
 class Vocab:
     token_to_id: dict[str, int]
     id_to_token: dict[int, str]
-    merges: list
-    scores: list
-    ranks: dict
+    merges: list[str]
+    ranks: dict[str, int]
+    scores: dict[str, float]
+    max_token_length: int
+    bos_id: int
+    eos_id: int
 
 
-def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
-    # Get ID to token mapping
-    vocab = Vocab()
-    vocab.id_to_token = {v: k for k, v in tokenizer.get_vocab().items()}
-    vocab.token_to_id = [vocab.id_to_token[i] for i in sorted(vocab.id_to_token)]
-
+def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[int, str]:
     tokenizer_path = Path(tokenizer.name_or_path) / "tokenizer.json"
     with open(tokenizer_path, "r", encoding="utf-8") as f:
         tokenizer_json = json.load(f)
         merges = tokenizer_json["model"]["merges"]
 
-    # Build merge rank table
-    for i, merge in merges:
-        rank = tuple(merge if isinstance(merge, list) else merge.split())
-    merge_rank = {
-        "".join(): i
-        for i, merge in enumerate(merges)
-    }
+    rank_table = {}
+    for id, merge in enumerate(merges):
+        token = tuple(merge if isinstance(merge, list) else merge.split())
+        rank_table[id] = "".join(token)
+
+    return rank_table
+
+
+def tokenizer_rank_scores(rank_table: dict[int, str]) -> dict:
+    pass
+
+
+def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
+    # Get ID to token mapping
+    id_to_token = {v: k for k, v in tokenizer.get_vocab().items()}
+    token_to_id = [id_to_token[i] for i in sorted(id_to_token)]
+
+    rank_table = tokenizer_rank_table(tokenizer)
 
     # Create pseudo-score dictionary
     # Tokens from initial vocab get score 0 (unmerged tokens)
@@ -162,17 +173,17 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
 
 
 def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
-    vocab = tokenizer_vocab(tokenizer)
-    # Write to binary
     with open(output_file + ".tokenizer", "wb") as out_f:
-        # Header: max_token_length, bos_token_id, eos_token_id
-        out_f.write(struct.pack("<I", max_token_length))
-        out_f.write(struct.pack("<I", model.params.bos_id))
-        out_f.write(struct.pack("<I", model.params.eos_id))
+        vocab = tokenizer_vocab(tokenizer)
 
-        for _, token in enumerate(token_to_id):
+        # Header: max_token_length, bos_token_id, eos_token_id
+        out_f.write(struct.pack("<I", vocab.max_token_length))
+        out_f.write(struct.pack("<I", vocab.bos_id))
+        out_f.write(struct.pack("<I", vocab.eos_id))
+
+        for _, token in enumerate(vocab.token_to_id):
             token_bytes = unicode_to_bytes(token)
-            out_f.write(struct.pack("f", pseudo_scores[token]))  # merge score
+            out_f.write(struct.pack("f", vocab.scores[token]))  # merge score
             out_f.write(struct.pack("<I", len(token_bytes)))  # 4 bytes: token length
             out_f.write(token_bytes)  # UTF-8 bytes
 
