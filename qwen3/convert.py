@@ -186,7 +186,7 @@ def model_export(model: Transformer, output_file: str, group_size: int = 64) -> 
 
 
 def bytes_to_unicode() -> dict[int, str]:
-    """Reference GPT-2 byte→Unicode map."""
+    """Generate a GPT-2 Byte to Unicode map."""
     bs = list(range(ord("!"), ord("~") + 1))
     bs += list(range(ord("¡"), ord("¬") + 1))
     bs += list(range(ord("®"), ord("ÿ") + 1))
@@ -200,24 +200,24 @@ def bytes_to_unicode() -> dict[int, str]:
     return dict(zip(bs, map(chr, cs)))
 
 
-def internal_to_bytes(U2B: dict[str, int], token_str: str) -> bytes:
-    return b"".join(
-        bytes([U2B[ch]]) if ch in U2B else ch.encode("utf-8") for ch in token_str
-    )
+def unicode_to_bytes(token: str) -> bytes:
+    """Convert a token to UTF-8 byte sequence"""
+    # Invert keys and values
+    utob = {u: b for b, u in bytes_to_unicode().items()}
+    # Map characters to uint8_t (standard unicode byte)
+    uint8 = [bytes([utob[ch]]) if ch in utob else ch.encode("utf-8") for ch in token]
+    # Merge converted byte sequence
+    return b"".join(uint8)
 
 
 def build_tokenizer(model: Transformer, output_file: str):
-    # Build the reverse table once
-    B2U = bytes_to_unicode()
-    U2B = {u: b for b, u in B2U.items()}
-
     # Load tokenizer (adjust as needed)
     tokenizer = model.tokenizer
 
     # Get ID → token mapping
     vocab = tokenizer.get_vocab()
-    id_to_token = {v: k for k, v in vocab.items()}
-    all_tokens = [id_to_token[i] for i in sorted(id_to_token)]
+    id_to_token: dict[int, str] = {v: k for k, v in vocab.items()}
+    token_to_id: dict[str, int] = [id_to_token[i] for i in sorted(id_to_token)]
 
     tokenizer_path = Path(tokenizer.name_or_path)
     tokenizer_json_path = tokenizer_path / "tokenizer.json"
@@ -239,7 +239,7 @@ def build_tokenizer(model: Transformer, output_file: str):
     # Tokens from initial vocab get score 0 (unmerged tokens)
     # Merged tokens get scores based on merge rank
     pseudo_scores = {}
-    for token_id, token in enumerate(all_tokens):
+    for _, token in enumerate(token_to_id):
         # If this token was the result of a merge, it will appear in merge_rank
         rank = merge_rank.get(token)
 
@@ -249,7 +249,7 @@ def build_tokenizer(model: Transformer, output_file: str):
             score = -1e6  # Initial vocab tokens
         pseudo_scores[token] = score
 
-    max_token_length = max(len(t) for t in all_tokens)
+    max_token_length = max(len(t) for t in token_to_id)
 
     # Write to binary
     with open(output_file + ".tokenizer", "wb") as out_f:
@@ -258,8 +258,8 @@ def build_tokenizer(model: Transformer, output_file: str):
         out_f.write(struct.pack("<I", model.params.bos_id))
         out_f.write(struct.pack("<I", model.params.eos_id))
 
-        for id, token in enumerate(all_tokens):
-            token_bytes = internal_to_bytes(U2B, token)
+        for _, token in enumerate(token_to_id):
+            token_bytes = unicode_to_bytes(token)
             out_f.write(struct.pack("f", pseudo_scores[token]))  # merge score
             out_f.write(struct.pack("<I", len(token_bytes)))  # 4 bytes: token length
             out_f.write(token_bytes)  # UTF-8 bytes
