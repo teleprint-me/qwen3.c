@@ -13,7 +13,15 @@ from jinja2 import Template
 from tokenizers import Tokenizer
 from transformers import AutoTokenizer
 
-from qwen3.model import Transformer
+
+#
+# HuggingFace Tokenizer
+#
+
+
+def tokenizer_load(input_dir: str) -> Tokenizer:
+    return AutoTokenizer.from_pretrained(input_dir)
+
 
 #
 # Jinja2 Template Conversion
@@ -65,11 +73,12 @@ def template_write(tokenizer: Tokenizer, output_file: str) -> None:
         path = f"{output_file}.template{suffix}"
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(text)
-        print(f"[Template] Wrote {path}")
+        print(f"[Template] Rendered:\n{text}")
+        print(f"[Template] Wrote {len(text)} bytes to {path}.")
 
 
 #
-# UTF-8 Unicode Conversion
+# UTF-8 Code Point Conversion
 #
 
 
@@ -103,9 +112,7 @@ def unicode_to_bytes(token: str) -> bytes:
 #
 
 
-def tokenizer_write(model: Transformer, input_dir: str, output_file: str) -> Tokenizer:
-    tokenizer = AutoTokenizer.from_pretrained(input_dir)
-
+def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
     # Get ID to token mapping
     vocab = tokenizer.get_vocab()
     id_to_token: dict[int, str] = {v: k for k, v in vocab.items()}
@@ -159,3 +166,15 @@ def tokenizer_write(model: Transformer, input_dir: str, output_file: str) -> Tok
     print(f"Written tokenizer model to {output_file}.tokenizer")
 
     return tokenizer
+
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    parser.add_argument("output_file", type=str, help="The output file path.")
+    parser.add_argument("input_dir", type=str, help="The input dir path.")
+    args = parser.parse_args()
+
+    tokenizer = tokenizer_load(args.input_dir)
+    template_write(tokenizer, args.output_file)
