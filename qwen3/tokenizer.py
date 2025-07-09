@@ -133,8 +133,13 @@ def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
     config_path = Path(tokenizer.name_or_path) / "config.json"
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
-    return config.get("bos_token_id", 151643), config.get("eos_token_id", 151645)
 
+    if "bos_token_id" not in config or "eos_token_id" not in config:
+        print("[Tokenizer] Warning: Using fallback BOS/EOS IDs.")
+
+    bos_id = config.get("bos_token_id", 151643)
+    eos_id = config.get("eos_token_id", 151645)
+    return bos_id, eos_id
 
 def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[str, int]:
     """Construct a merge pair to rank index mapping."""
