@@ -1,10 +1,29 @@
 """
 @file qwen3.weights
-@brief Converts Qwen3ForCausalLM architectures to a custom binary format.
+@brief Converts Qwen3ForCausalLM model weights into a custom binary format.
 
-This module provides utilities for extracting and converting the weights from
-float32 to symetric int8 quantization. The quantized weights are then serialized
-into a custom binary format.
+This module provides a full pipeline for exporting Qwen3 model weights from
+PyTorch (transformers) into a C-compatible binary file format.
+
+The export process includes:
+- Loading model hyperparameters from config.json
+- Initializing a minimal Transformer representation (for serialization)
+- Converting selected weights to symmetric int8 quantization (Q8_0)
+- Preserving normalization and scale parameters in float32
+- Writing a fixed 256-byte header followed by serialized tensors
+
+All exported weights are grouped and quantized with a configurable group size
+(default: 64), and written in an order compatible with a C-based inference engine.
+
+The output file consists of:
+1. A 256-byte header with architecture metadata
+2. LayerNorm and attention scale weights in float32
+3. Model weights quantized in grouped Q8_0 format (int8 + scale)
+
+Use `model_write()` to generate the final .bin file.
+
+@see qwen3.model for internal architecture structure
+@see qwen3.tokenizer for tokenizer and template serialization
 """
 
 import json
