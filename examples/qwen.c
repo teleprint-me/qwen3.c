@@ -99,7 +99,7 @@ typedef struct Weights {
     float *k_rms_norm;
 } Weights;
 
-typedef struct RunState {
+typedef struct ForwardState {
     // current wave of activations
     float *x; // activation at current time stamp (dim,)
     float *xb; // same, but inside a residual branch (dim,)
@@ -116,17 +116,17 @@ typedef struct RunState {
     // kv cache
     float *key_cache;   // (layer, seq_len, dim)
     float *value_cache; // (layer, seq_len, dim)
-} RunState;
+} ForwardState;
 
 typedef struct Transformer {
     Params config; // the hyperparameters of the architecture (the blueprint)
     Weights weights; // the weights of the model
-    RunState state; // buffers for the "wave" of activations in the forward pass
+    ForwardState state; // buffers for the "wave" of activations in the forward pass
     float *data; // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
 } Transformer;
 
-void malloc_run_state(RunState* s, Params *p) {
+void malloc_run_state(ForwardState* s, Params *p) {
     // we calloc instead of malloc to keep valgrind happy
     int all_heads_dim = p->n_heads * p->head_dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
@@ -153,7 +153,7 @@ void malloc_run_state(RunState* s, Params *p) {
     }
 }
 
-void free_run_state(RunState* s) {
+void free_run_state(ForwardState* s) {
     free(s->x);
     free(s->xb);
     free(s->xb2);
@@ -287,7 +287,7 @@ void read_checkpoint(char *checkpoint, Params *config, Weights* weights, float**
 void build_transformer(Transformer *t, char *checkpoint_path, int ctx_length) {
     // read in the Params and the Weights from the checkpoint
     read_checkpoint(checkpoint_path, &t->config, &t->weights, &t->data, &t->file_size, ctx_length);
-    // allocate the RunState buffers
+    // allocate the ForwardState buffers
     malloc_run_state(&t->state, &t->config);
 }
 
@@ -305,7 +305,7 @@ void free_transformer(Transformer *t) {
     if(t->weights.cls != t->weights.qe) free(t->weights.cls);
     // close the memory mapping
     if (t->data != MAP_FAILED) munmap(t->data, t->file_size);
-    // free the RunState buffers
+    // free the ForwardState buffers
     free_run_state(&t->state);
 }
 
@@ -396,7 +396,7 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
-void attention(Params* p, RunState* s, int l, int pos) {
+void attention(Params* p, ForwardState* s, int l, int pos) {
     int head_dim = p->head_dim;
     int kv_mul   = p->n_heads / p->n_kv_heads;
     int kv_dim   = p->n_kv_heads * head_dim;
@@ -461,7 +461,7 @@ float silu(float x) {
 }
 
 /// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
-void swish(RunState* s, int hidden_dim) {
+void swish(ForwardState* s, int hidden_dim) {
     float* hb  = s->hb;  // W1(x)
     float* hb2 = s->hb2; // W3(x)
 
@@ -475,7 +475,7 @@ float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
     Params *p = &transformer->config;
     Weights* w = &transformer->weights;
-    RunState* s = &transformer->state;
+    ForwardState* s = &transformer->state;
     float *x = s->x;
     int dim = p->dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
