@@ -122,7 +122,7 @@ class Vocab:
     max_token_length: int
     bos_id: int
     eos_id: int
-    token_to_id: list[str]
+    tokens_by_id: list[str]
     scores: dict[str, float]
 
 
@@ -182,17 +182,17 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
 
     vocab_raw = tokenizer.get_vocab()
     id_to_token = {v: k for k, v in vocab_raw.items()}
-    token_to_id = [id_to_token[i] for i in sorted(id_to_token)]
-    max_token_length = max(len(t) for t in token_to_id)
+    tokens_by_id = [id_to_token[i] for i in sorted(id_to_token)]
+    max_token_length = max(len(t) for t in tokens_by_id)
     bos_id, eos_id = tokenizer_config_ids(tokenizer)
     rank_table = tokenizer_rank_table(tokenizer)
-    rank_scores = tokenizer_rank_scores(rank_table, token_to_id)
+    rank_scores = tokenizer_rank_scores(rank_table, tokens_by_id)
 
     return Vocab(
         max_token_length=max_token_length,
         bos_id=bos_id,
         eos_id=eos_id,
-        token_to_id=token_to_id,
+        tokens_by_id=tokens_by_id,
         scores=rank_scores,
     )
 
@@ -210,7 +210,7 @@ def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
         out_f.write(struct.pack("<i", vocab.eos_id))
 
         # Tokens will be cast to uint8_t on C-side
-        for token in vocab.token_to_id:
+        for token in vocab.tokens_by_id:
             token_bytes = unicode_to_bytes(token)
             out_f.write(struct.pack("f", vocab.scores[token]))  # float32 score
             out_f.write(struct.pack("<i", len(token_bytes)))  # int32 length
