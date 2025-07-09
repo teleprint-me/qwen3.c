@@ -267,7 +267,38 @@ def export_group_write_header(group: ExportGroup) -> None:
     group.buffer.write(b"\0" * pad)
 
 
-def group_export_write_q8_weights(group: ExportGroup) -> None:
+def export_group_write_fp32_norm_weights(group: ExportGroup) -> None:
+    """Serialize attention and MLP RMSNorm parameters as fp32."""
+    for layer in group.model.layers:  # attention norms
+        serialize_fp32(group.buffer, layer.attention_norm.weight)
+    for layer in group.model.layers:  # MLP norms
+        serialize_fp32(group.buffer, layer.ffn_norm.weight)
+    serialize_fp32(group.buffer, group.model.norm.weight)  # final pre-classifier norm
+
+
+def export_group_write_fp32_attn_weights(group: ExportGroup) -> None:
+    """Serialize lq/lk RMSNorm weights (Qwen3-specific) as fp32."""
+    for layer in group.model.layers:
+        serialize_fp32(
+            group.buffer,
+            (
+                layer.attention.lq.weight
+                if layer.attention.lq.weight is not None
+                else torch.ones(group.model.params.head_dim)
+            ),
+        )
+    for layer in group.model.layers:
+        serialize_fp32(
+            group.buffer,
+            (
+                layer.attention.lk.weight
+                if layer.attention.lk.weight is not None
+                else torch.ones(group.model.params.head_dim)
+            ),
+        )
+
+
+def export_group_write_q8_weights(group: ExportGroup) -> None:
     """
     Quantizes and serializes a list of weights to Q8_0 format.
 
@@ -311,39 +342,12 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
 
     group.buffer = open(output_file, "wb")
     export_group_write_header(group)
+    export_group_write_fp32_norm_weights(group)
+    export_group_write_fp32_attn_weights(group)
+    export_group_write_q8_weights(group)
 
-    # first let's write out all the params that we are keeping in fp32: the norms
-    for layer in model.layers:  # attention norms
-        serialize_fp32(group.buffer, layer.attention_norm.weight)
-    for layer in model.layers:  # MLP norms
-        serialize_fp32(group.buffer, layer.ffn_norm.weight)
-    serialize_fp32(group.buffer, model.norm.weight)  # final pre-classifier norm
-
-    # write out the QK-LayerNorm weights (Qwen3)
-    for layer in model.layers:
-        serialize_fp32(
-            group.buffer,
-            (
-                layer.attention.lq.weight
-                if layer.attention.lq.weight is not None
-                else torch.ones(model.params.head_dim)
-            ),
-        )
-    for layer in model.layers:
-        serialize_fp32(
-            group.buffer,
-            (
-                layer.attention.lk.weight
-                if layer.attention.lk.weight is not None
-                else torch.ones(model.params.head_dim)
-            ),
-        )
-
-    group_export_write_q8_weights(group)
-
-    # write to binary file
     group.buffer.close()
-    print(f"Written model checkpoint to {output_file}")
+    print(f"Wrote model checkpoint to {output_file}")
 
 
 if __name__ == "__main__":
@@ -352,9 +356,16 @@ if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("output_file", type=str, help="The output file path.")
     parser.add_argument("input_dir", type=str, help="The input dir path.")
+    parser.add_argument(
+        "-g",
+        "--group-size",
+        type=int,
+        default=64,
+        help="Number of values per quantization group.",
+    )
     args = parser.parse_args()
 
     state = AutoModelForCausalLM.from_pretrained(args.input_dir).state_dict()
-
     params = model_params(args.input_dir)
     model = model_load(params, state)
+    model_write(model, args.output_file, args.group_size)
