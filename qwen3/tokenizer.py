@@ -135,7 +135,7 @@ def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
         config = json.load(f)
 
     if "bos_token_id" not in config or "eos_token_id" not in config:
-        print("[Tokenizer] Warning: Using fallback BOS/EOS IDs.")
+        print("[Tokenizer] Warning: Using fallback bos and eos ids.")
 
     bos_id = config.get("bos_token_id", 151643)
     eos_id = config.get("eos_token_id", 151645)
@@ -197,9 +197,7 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
     )
 
 
-def tokenizer_write(tokenizer: Tokenizer, output_file: str) -> None:
-    vocab = tokenizer_vocab(tokenizer)
-
+def tokenizer_write(vocab: Vocab, output_file: str) -> None:
     print("[Tokenizer] Serializing model tokenizer.")
     with open(output_file + ".tokenizer", "wb") as out_f:
         # Binary header
@@ -229,4 +227,6 @@ if __name__ == "__main__":
 
     tokenizer = tokenizer_load(args.input_dir)
     template_write(tokenizer, args.output_file)
-    tokenizer_write(tokenizer, args.output_file)
+
+    vocab = tokenizer_vocab(tokenizer)
+    tokenizer_write(vocab, args.output_file)
