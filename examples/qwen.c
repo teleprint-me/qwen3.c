@@ -112,13 +112,16 @@ typedef struct ForwardState {
 
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
+
+    // Output
+    float* logits; // Final output logits (vocab_size)
+
+    // Key/value cache
+    float* k_cache; // Cached keys (n_layers, seq_len, kv_dim)
+    float* v_cache; // Cached values (n_layers, seq_len, kv_dim)
+
     Q8Tensor xq; // quantized x (dim,)
     Q8Tensor hq; // quantized hb (hidden_dim,)
-
-    float *logits; // output logits
-    // kv cache
-    float *key_cache;   // (layer, seq_len, dim)
-    float *value_cache; // (layer, seq_len, dim)
 } ForwardState;
 
 typedef struct Transformer {
@@ -143,13 +146,13 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->q = calloc(all_heads_dim, sizeof(float));
     s->scores = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
-    s->key_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
-    s->value_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
+    s->k_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
+    s->v_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
     if (!s->x || !s->x_rms_norm || !s->hb || !s->hb2 || !s->q
-     || !s->scores || !s->logits || !s->key_cache
-     || !s->value_cache) {
+     || !s->scores || !s->logits || !s->k_cache
+     || !s->v_cache) {
         fprintf(stderr, "malloc failed!\n");
         exit(EXIT_FAILURE);
     }
@@ -167,8 +170,8 @@ void free_run_state(ForwardState* s) {
     free(s->q);
     free(s->scores);
     free(s->logits);
-    free(s->key_cache);
-    free(s->value_cache);
+    free(s->k_cache);
+    free(s->v_cache);
 }
 
 // ----------------------------------------------------------------------------
@@ -411,7 +414,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
         // Compute attention scores
         #pragma omp parallel for
         for (int t = 0; t <= pos; t++) {
-            float* k = s->key_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
+            float* k = s->k_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
             float score = 0.0f;
             for (int i = 0; i < head_dim; i++) {
                 score += q[i] * k[i];
@@ -434,7 +437,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
 
             #pragma omp for
             for (int t = 0; t <= pos; t++) {
-                float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
+                float* v = s->v_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
                 for (int i = 0; i < head_dim; i++) {
                     tmp[i] += scores[t] * v[i];
                 }
@@ -491,8 +494,8 @@ float *forward(Transformer *transformer, int token, int pos) {
         uint64_t loff = l * (uint64_t)p->seq_len * kv_dim;
 
         // Save KV at this time step (pos) to cache
-        s->k = s->key_cache + loff + pos * kv_dim;
-        s->v = s->value_cache + loff + pos * kv_dim;
+        s->k = s->k_cache + loff + pos * kv_dim;
+        s->v = s->v_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
         rmsnorm(s->x_rms_norm, x, w->att_rms_norm + l*dim, dim);
