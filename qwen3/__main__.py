@@ -4,9 +4,11 @@
 """
 
 from argparse import ArgumentParser, Namespace
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from qwen3.weights import model_params, model_load, model_write
+
 from qwen3.tokenizer import template_write, tokenizer_vocab, tokenizer_write
+from qwen3.weights import model_load, model_params, model_write
 
 
 def parse_args() -> Namespace:
