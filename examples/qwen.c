@@ -100,17 +100,21 @@ typedef struct Weights {
 } Weights;
 
 typedef struct ForwardState {
-    // current wave of activations
-    float *x; // activation at current time stamp (dim,)
-    float *x_rms_norm; // same, but inside a residual branch (dim,)
+    // Residual stream
+    float* x; // Persistent residual (dim)
+    float* x_rms_norm; // RMSNorm(x), reused in scores and ffn (n_heads * head_dim)
+    
+    // Attention workspace
+    float* q; // Query (n_heads * head_dim)
+    float* k; // Key   (n_kv_heads * head_dim)
+    float* v; // Value (n_kv_heads * head_dim)
+    float* scores; // Attention scores (n_heads * seq_len)
+
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
     Q8Tensor xq; // quantized x (dim,)
     Q8Tensor hq; // quantized hb (hidden_dim,)
-    float *q; // query (dim,)
-    float *k; // key (dim,)
-    float *v; // value (dim,)
-    float *att; // buffer for scores/attention values (n_heads, seq_len)
+
     float *logits; // output logits
     // kv cache
     float *key_cache;   // (layer, seq_len, dim)
@@ -137,14 +141,14 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
     s->hq = (Q8Tensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
     s->q = calloc(all_heads_dim, sizeof(float));
-    s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
+    s->scores = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
     s->key_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
     s->value_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
     if (!s->x || !s->x_rms_norm || !s->hb || !s->hb2 || !s->q
-     || !s->att || !s->logits || !s->key_cache
+     || !s->scores || !s->logits || !s->key_cache
      || !s->value_cache) {
         fprintf(stderr, "malloc failed!\n");
         exit(EXIT_FAILURE);
@@ -161,7 +165,7 @@ void free_run_state(ForwardState* s) {
     free(s->hq.q);
     free(s->hq.s);
     free(s->q);
-    free(s->att);
+    free(s->scores);
     free(s->logits);
     free(s->key_cache);
     free(s->value_cache);
@@ -401,7 +405,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
 
     for (int h = 0; h < p->n_heads; h++) {
         float* q   = s->q + h * head_dim;
-        float* att = s->att + h * p->seq_len;
+        float* scores = s->scores + h * p->seq_len;
         float* x_rms_norm  = s->x_rms_norm  + h * head_dim;
 
         // Compute attention scores
@@ -413,11 +417,11 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
                 score += q[i] * k[i];
             }
 
-            att[t] = score / sqrtf((float)head_dim);
+            scores[t] = score / sqrtf((float)head_dim);
         }
 
         // Normalize scores to get attention weights
-        softmax(att, pos + 1);
+        softmax(scores, pos + 1);
 
         // Initialize output vector for this head
         memset(x_rms_norm, 0, sizeof(float) * head_dim);
@@ -431,9 +435,8 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
             #pragma omp for
             for (int t = 0; t <= pos; t++) {
                 float* v = s->value_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
-                float a = att[t];
                 for (int i = 0; i < head_dim; i++) {
-                    tmp[i] += a * v[i];
+                    tmp[i] += scores[t] * v[i];
                 }
             }
 
