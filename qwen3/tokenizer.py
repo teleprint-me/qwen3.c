@@ -57,15 +57,6 @@ from tokenizers import Tokenizer
 from transformers import AutoTokenizer
 
 #
-# HuggingFace Tokenizer
-#
-
-
-def tokenizer_load(input_dir: str) -> Tokenizer:
-    return AutoTokenizer.from_pretrained(input_dir)
-
-
-#
 # Jinja2 Template Conversion
 #
 # @warning Special tokens are handled inversely due to model behavior.
@@ -268,7 +259,7 @@ if __name__ == "__main__":
     parser.add_argument("input_dir", type=str, help="The input dir path.")
     args = parser.parse_args()
 
-    tokenizer = tokenizer_load(args.input_dir)
+    tokenizer = AutoTokenizer.from_pretrained(args.input_dir)
     template_write(tokenizer, args.output_file)
 
     vocab = tokenizer_vocab(tokenizer)
