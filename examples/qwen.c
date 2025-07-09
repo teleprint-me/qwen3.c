@@ -56,7 +56,7 @@ typedef struct Q8Tensor {
 /// @note Many of these are arrays of pointers, one per layer.
 ///       So memory layout looks like:
 ///           weights.wq[layer] → Q8Tensor {q, s}
-typedef struct TransformerWeights {
+typedef struct Weights {
     // token embedding table
     Q8Tensor *q_tokens; // (vocab_size, dim)
     float *token_embedding_table; // same, but dequantized
@@ -79,7 +79,7 @@ typedef struct TransformerWeights {
     float *rms_final_weight; // (dim,)
     // (optional) classifier weights for the logits, on the last layer
     Q8Tensor *wcls;
-} TransformerWeights;
+} Weights;
 
 typedef struct RunState {
     // current wave of activations
@@ -102,7 +102,7 @@ typedef struct RunState {
 
 typedef struct Transformer {
     Params config; // the hyperparameters of the architecture (the blueprint)
-    TransformerWeights weights; // the weights of the model
+    Weights weights; // the weights of the model
     RunState state; // buffers for the "wave" of activations in the forward pass
     float *data; // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
@@ -206,7 +206,7 @@ Q8Tensor *init_quantized_tensors(void **ptr, int n, int size_each) {
     return res;
 }
 
-void memory_map_weights(TransformerWeights *w, Params *p, void *ptr) {
+void memory_map_weights(Weights *w, Params *p, void *ptr) {
     // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
     float *fptr = (float*) ptr; // cast our pointer to float*
 
@@ -240,7 +240,7 @@ void memory_map_weights(TransformerWeights *w, Params *p, void *ptr) {
     w->wcls = p->shared_classifier ? w->q_tokens : init_quantized_tensors(&ptr, 1, p->dim * p->vocab_size);
 }
 
-void read_checkpoint(char *checkpoint, Params *config, TransformerWeights* weights, float** data, ssize_t* file_size, int ctx_length) {
+void read_checkpoint(char *checkpoint, Params *config, Weights* weights, float** data, ssize_t* file_size, int ctx_length) {
     FILE *file = fopen(checkpoint, "rb");
     if (!file) { fprintf(stderr, "Couldn't open checkpoint %s\n", checkpoint); exit(EXIT_FAILURE); }
 
@@ -456,7 +456,7 @@ void swish(RunState* s, int hidden_dim) {
 float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
     Params *p = &transformer->config;
-    TransformerWeights* w = &transformer->weights;
+    Weights* w = &transformer->weights;
     RunState* s = &transformer->state;
     float *x = s->x;
     int dim = p->dim;
