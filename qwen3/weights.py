@@ -11,6 +11,7 @@ import json
 import os
 import struct
 from io import BufferedWriter
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -50,50 +51,48 @@ def model_params(input_dir: str) -> ModelArgs:
 #
 
 
-def model_load(params: ModelArgs, input_dir: str) -> Transformer:
+def model_load(params: ModelArgs, state: dict[str, Tensor]) -> Transformer:
     model = Transformer(params)
+    model.tok_embeddings.weight = nn.Parameter(state["model.embed_tokens.weight"])
+    model.norm.weight = nn.Parameter(state["model.norm.weight"])
 
-    state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
-    model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])
-    model.norm.weight = nn.Parameter(state_dict["model.norm.weight"])
     for layer in model.layers:
         i = layer.layer_id
         layer.attention_norm.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.input_layernorm.weight"]
+            state[f"model.layers.{i}.input_layernorm.weight"]
         )
         layer.attention.wq.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
+            state[f"model.layers.{i}.self_attn.q_proj.weight"]
         )
         layer.attention.wk.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.k_proj.weight"]
+            state[f"model.layers.{i}.self_attn.k_proj.weight"]
         )
         layer.attention.wv.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
+            state[f"model.layers.{i}.self_attn.v_proj.weight"]
         )
         layer.attention.wo.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
+            state[f"model.layers.{i}.self_attn.o_proj.weight"]
         )
         layer.attention.lq.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.q_norm.weight"]
+            state[f"model.layers.{i}.self_attn.q_norm.weight"]
         )
         layer.attention.lk.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.k_norm.weight"]
+            state[f"model.layers.{i}.self_attn.k_norm.weight"]
         )
         layer.ffn_norm.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
+            state[f"model.layers.{i}.post_attention_layernorm.weight"]
         )
         layer.feed_forward.w1.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.gate_proj.weight"]
+            state[f"model.layers.{i}.mlp.gate_proj.weight"]
         )
         layer.feed_forward.w2.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.down_proj.weight"]
+            state[f"model.layers.{i}.mlp.down_proj.weight"]
         )
         layer.feed_forward.w3.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.up_proj.weight"]
+            state[f"model.layers.{i}.mlp.up_proj.weight"]
         )
 
-    # final classifier
-    model.output.weight = nn.Parameter(state_dict["lm_head.weight"])
+    model.output.weight = nn.Parameter(state["lm_head.weight"])
     model.eval()
     return model
 
@@ -121,11 +120,18 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
 # Quantize weights
 #
 
+@dataclass
+class Q8Tensor:
+    quant: Tensor
+    scale: Tensor
+    error: float
+
 
 # TODO: Group size is the number of elements per thread
 # NOTE: In model.py, this is equivalent to model_parallel_size
 # This is not obvious at first glance and should be renamed for clarity.
-def quantize_q80(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
+# This is number of tensors per thread?
+def q8_tensor(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
     """
     takes a tensor and returns the Q8_0 quantized version
     i.e. symmetric quantization into int8, range [-127,127]
@@ -253,7 +259,7 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     ew = []
     for i, w in enumerate(weights):
         # quantize this weight
-        q, s, err = quantize_q80(w, group_size)
+        q, s, err = q8_tensor(w, group_size)
         # save the int8 weights to file
         serialize_int8(out_file, q)  # save the tensor in int8
         serialize_fp32(out_file, s)  # save scale factors
@@ -280,5 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("input_dir", type=str, help="The input dir path.")
     args = parser.parse_args()
 
+    state = AutoModelForCausalLM.from_pretrained(args.input_dir).state_dict()
+
     params = model_params(args.input_dir)
-    model = model_load(params, args.input_dir)
+    model = model_load(params, state)
