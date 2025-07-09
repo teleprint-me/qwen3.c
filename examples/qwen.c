@@ -38,7 +38,7 @@ int GS = 1; // group size global for quantization of the weights
 // ----------------------------------------------------------------------------
 // Transformer model
 
-typedef struct Config {
+typedef struct Params {
     int magic; // checkpoint magic number
     int version; // file format version
     int dim; // transformer dimension
@@ -51,7 +51,7 @@ typedef struct Config {
     int head_dim; // head dimension
     int shared_classifier; // 1 if wcls == p_tokens
     int group_size; // quantization group size (export.py uses 64)
-} Config;
+} Params;
 
 typedef struct QuantizedTensor {
     int8_t *q;    // quantized values
@@ -106,14 +106,14 @@ typedef struct RunState {
 } RunState;
 
 typedef struct Transformer {
-    Config config; // the hyperparameters of the architecture (the blueprint)
+    Params config; // the hyperparameters of the architecture (the blueprint)
     TransformerWeights weights; // the weights of the model
     RunState state; // buffers for the "wave" of activations in the forward pass
     float *data; // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
 } Transformer;
 
-void malloc_run_state(RunState* s, Config *p) {
+void malloc_run_state(RunState* s, Params *p) {
     // we calloc instead of malloc to keep valgrind happy
     int all_heads_dim = p->n_heads * p->head_dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
@@ -211,7 +211,7 @@ QuantizedTensor *init_quantized_tensors(void **ptr, int n, int size_each) {
     return res;
 }
 
-void memory_map_weights(TransformerWeights *w, Config *p, void *ptr) {
+void memory_map_weights(TransformerWeights *w, Params *p, void *ptr) {
     // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
     float *fptr = (float*) ptr; // cast our pointer to float*
 
@@ -245,7 +245,7 @@ void memory_map_weights(TransformerWeights *w, Config *p, void *ptr) {
     w->wcls = p->shared_classifier ? w->q_tokens : init_quantized_tensors(&ptr, 1, p->dim * p->vocab_size);
 }
 
-void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weights, float** data, ssize_t* file_size, int ctx_length) {
+void read_checkpoint(char *checkpoint, Params *config, TransformerWeights* weights, float** data, ssize_t* file_size, int ctx_length) {
     FILE *file = fopen(checkpoint, "rb");
     if (!file) { fprintf(stderr, "Couldn't open checkpoint %s\n", checkpoint); exit(EXIT_FAILURE); }
 
@@ -263,7 +263,7 @@ void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weigh
 
     // checkpoint format is 256-byte header, and then the model weights
 
-    memcpy(config, *data, sizeof(Config));
+    memcpy(config, *data, sizeof(Params));
     if (config->magic != 0x7177656E) { fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint); exit(EXIT_FAILURE); }
     if (config->version != 1) { fprintf(stderr, "Checkpoint %s is version %d, need version 1\n", checkpoint, config->version); exit(EXIT_FAILURE); }
 
@@ -277,7 +277,7 @@ void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weigh
 }
 
 void build_transformer(Transformer *t, char *checkpoint_path, int ctx_length) {
-    // read in the Config and the Weights from the checkpoint
+    // read in the Params and the Weights from the checkpoint
     read_checkpoint(checkpoint_path, &t->config, &t->weights, &t->data, &t->file_size, ctx_length);
     // allocate the RunState buffers
     malloc_run_state(&t->state, &t->config);
@@ -388,7 +388,7 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
-void attention(Config* p, RunState* s, int l, int pos) {
+void attention(Params* p, RunState* s, int l, int pos) {
     int head_dim = p->head_dim;
     int kv_mul   = p->n_heads / p->n_kv_heads;
     int kv_dim   = p->n_kv_heads * head_dim;
@@ -465,7 +465,7 @@ void swish(RunState* s, int hidden_dim) {
 
 float *forward(Transformer *transformer, int token, int pos) {
     // a few convenience variables
-    Config *p = &transformer->config;
+    Params *p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
     float *x = s->x;
