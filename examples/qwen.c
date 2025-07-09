@@ -103,7 +103,6 @@ typedef struct ForwardState {
     // current wave of activations
     float *x; // activation at current time stamp (dim,)
     float *xb; // same, but inside a residual branch (dim,)
-    float *xb2; // an additional buffer just for convenience (dim,)
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
     Q8Tensor xq; // quantized x (dim,)
@@ -133,7 +132,6 @@ void malloc_run_state(ForwardState* s, Params *p) {
 
     s->x = calloc(p->dim, sizeof(float));
     s->xb = calloc(all_heads_dim, sizeof(float));
-    s->xb2 = calloc(p->dim, sizeof(float));
     s->hb = calloc(p->hidden_dim, sizeof(float));
     s->hb2 = calloc(p->hidden_dim, sizeof(float));
     s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
@@ -145,7 +143,7 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->value_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
-    if (!s->x || !s->xb || !s->xb2 || !s->hb || !s->hb2 || !s->q
+    if (!s->x || !s->xb || !s->hb || !s->hb2 || !s->q
      || !s->att || !s->logits || !s->key_cache
      || !s->value_cache) {
         fprintf(stderr, "malloc failed!\n");
@@ -156,7 +154,6 @@ void malloc_run_state(ForwardState* s, Params *p) {
 void free_run_state(ForwardState* s) {
     free(s->x);
     free(s->xb);
-    free(s->xb2);
     free(s->hb);
     free(s->hb2);
     free(s->xq.q);
@@ -535,11 +532,11 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // final matmul to get the output of the attention
         quantize(&s->xq, s->xb, all_heads_dim);
-        matmul(s->xb2, &s->xq, w->wo + l, all_heads_dim, dim);
+        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, dim);
 
         // residual connection back into x
         for (int i = 0; i < dim; i++)
-            x[i] += s->xb2[i];
+            x[i] += s->xb[i];
 
         // ffn rmsnorm
         rmsnorm(s->xb, x, w->ffn_rms_norm + l*dim, dim);
