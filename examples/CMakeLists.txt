@@ -1,6 +1,6 @@
 # examples
 set(EXAMPLES
-    "runq"
+    "qwen"
 )
 
 set(INPUT_DIR ${PROJECT_SOURCE_DIR}/examples)
