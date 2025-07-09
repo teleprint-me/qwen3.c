@@ -48,37 +48,37 @@ typedef struct Params {
     int group_size; // quantization group size (export.py uses 64)
 } Params;
 
-typedef struct QuantizedTensor {
+typedef struct Q8Tensor {
     int8_t *q;    // quantized values
     float *s; // scaling factors
-} QuantizedTensor;
+} Q8Tensor;
 
 /// @note Many of these are arrays of pointers, one per layer.
 ///       So memory layout looks like:
-///           weights.wq[layer] → QuantizedTensor {q, s}
+///           weights.wq[layer] → Q8Tensor {q, s}
 typedef struct TransformerWeights {
     // token embedding table
-    QuantizedTensor *q_tokens; // (vocab_size, dim)
+    Q8Tensor *q_tokens; // (vocab_size, dim)
     float *token_embedding_table; // same, but dequantized
     // weights for rmsnorms
     float *rms_att_weight; // (layer, dim) rmsnorm weights
     float *rms_ffn_weight; // (layer, dim)
     // weights for matmuls. note dim == n_heads * head_size
-    QuantizedTensor *wq; // (layer, dim, n_heads * head_size)
-    QuantizedTensor *wk; // (layer, dim, n_kv_heads * head_size)
-    QuantizedTensor *wv; // (layer, dim, n_kv_heads * head_size)
-    QuantizedTensor *wo; // (layer, n_heads * head_size, dim)
+    Q8Tensor *wq; // (layer, dim, n_heads * head_size)
+    Q8Tensor *wk; // (layer, dim, n_kv_heads * head_size)
+    Q8Tensor *wv; // (layer, dim, n_kv_heads * head_size)
+    Q8Tensor *wo; // (layer, n_heads * head_size, dim)
     // QK-RMSNorm for Qwen3
     float *q_ln_weights;
     float *k_ln_weights;
     // weights for ffn (gate, down, up)
-    QuantizedTensor *w1; // (layer, hidden_dim, dim)
-    QuantizedTensor *w2; // (layer, dim, hidden_dim)
-    QuantizedTensor *w3; // (layer, hidden_dim, dim)
+    Q8Tensor *w1; // (layer, hidden_dim, dim)
+    Q8Tensor *w2; // (layer, dim, hidden_dim)
+    Q8Tensor *w3; // (layer, hidden_dim, dim)
     // final rmsnorm
     float *rms_final_weight; // (dim,)
     // (optional) classifier weights for the logits, on the last layer
-    QuantizedTensor *wcls;
+    Q8Tensor *wcls;
 } TransformerWeights;
 
 typedef struct RunState {
@@ -88,8 +88,8 @@ typedef struct RunState {
     float *xb2; // an additional buffer just for convenience (dim,)
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
-    QuantizedTensor xq; // quantized x (dim,)
-    QuantizedTensor hq; // quantized hb (hidden_dim,)
+    Q8Tensor xq; // quantized x (dim,)
+    Q8Tensor hq; // quantized hb (hidden_dim,)
     float *q; // query (dim,)
     float *k; // key (dim,)
     float *v; // value (dim,)
@@ -118,8 +118,8 @@ void malloc_run_state(RunState* s, Params *p) {
     s->xb2 = calloc(p->dim, sizeof(float));
     s->hb = calloc(p->hidden_dim, sizeof(float));
     s->hb2 = calloc(p->hidden_dim, sizeof(float));
-    s->xq = (QuantizedTensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
-    s->hq = (QuantizedTensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
+    s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
+    s->hq = (Q8Tensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
     s->q = calloc(all_heads_dim, sizeof(float));
     s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
@@ -155,14 +155,14 @@ void free_run_state(RunState* s) {
 // ----------------------------------------------------------------------------
 // Quantization functions
 
-void dequantize(QuantizedTensor *qx, float *x, int n) {
+void dequantize(Q8Tensor *qx, float *x, int n) {
     #pragma omp parallel for
     for (int i = 0; i < n; i++) {
         x[i] = qx->q[i] * qx->s[i / GS];
     }
 }
 
-void quantize(QuantizedTensor *qx, float *x, int n) {
+void quantize(Q8Tensor *qx, float *x, int n) {
     const int num_groups = n / GS;
     const float Q_MAX = 127.0f;
 
@@ -190,9 +190,9 @@ void quantize(QuantizedTensor *qx, float *x, int n) {
 }
 
 /* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at *ptr */
-QuantizedTensor *init_quantized_tensors(void **ptr, int n, int size_each) {
+Q8Tensor *init_quantized_tensors(void **ptr, int n, int size_each) {
     void *p = *ptr;
-    QuantizedTensor *res = malloc(n * sizeof(QuantizedTensor));
+    Q8Tensor *res = malloc(n * sizeof(Q8Tensor));
 
     for (int i = 0; i < n; i++) {
         /* map quantized int8 values*/
@@ -338,7 +338,7 @@ void softmax(float *x, int size) {
     }
 }
 
-void matmul(float *xout, QuantizedTensor *x, QuantizedTensor *w, int n, int d) {
+void matmul(float *xout, Q8Tensor *x, Q8Tensor *w, int n, int d) {
     // W (d,n) @ x (n,) -> xout (d,)
     // by far the most amount of time is spent inside this little function
     // inputs to this function are both quantized
