@@ -102,7 +102,7 @@ typedef struct Weights {
 typedef struct ForwardState {
     // current wave of activations
     float *x; // activation at current time stamp (dim,)
-    float *xb; // same, but inside a residual branch (dim,)
+    float *x_rms_norm; // same, but inside a residual branch (dim,)
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
     Q8Tensor xq; // quantized x (dim,)
@@ -131,7 +131,7 @@ void malloc_run_state(ForwardState* s, Params *p) {
     int kv_dim = p->n_kv_heads * p->head_dim;
 
     s->x = calloc(p->dim, sizeof(float));
-    s->xb = calloc(all_heads_dim, sizeof(float));
+    s->x_rms_norm = calloc(all_heads_dim, sizeof(float));
     s->hb = calloc(p->hidden_dim, sizeof(float));
     s->hb2 = calloc(p->hidden_dim, sizeof(float));
     s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
@@ -143,7 +143,7 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->value_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
-    if (!s->x || !s->xb || !s->hb || !s->hb2 || !s->q
+    if (!s->x || !s->x_rms_norm || !s->hb || !s->hb2 || !s->q
      || !s->att || !s->logits || !s->key_cache
      || !s->value_cache) {
         fprintf(stderr, "malloc failed!\n");
@@ -153,7 +153,7 @@ void malloc_run_state(ForwardState* s, Params *p) {
 
 void free_run_state(ForwardState* s) {
     free(s->x);
-    free(s->xb);
+    free(s->x_rms_norm);
     free(s->hb);
     free(s->hb2);
     free(s->xq.q);
@@ -402,7 +402,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
     for (int h = 0; h < p->n_heads; h++) {
         float* q   = s->q + h * head_dim;
         float* att = s->att + h * p->seq_len;
-        float* xb  = s->xb  + h * head_dim;
+        float* x_rms_norm  = s->x_rms_norm  + h * head_dim;
 
         // Compute attention scores
         #pragma omp parallel for
@@ -420,7 +420,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
         softmax(att, pos + 1);
 
         // Initialize output vector for this head
-        memset(xb, 0, sizeof(float) * head_dim);
+        memset(x_rms_norm, 0, sizeof(float) * head_dim);
 
         // Accumulate weighted values in thread-safe way
         #pragma omp parallel
@@ -440,7 +440,7 @@ void attention(Params* p, ForwardState* s, int l, int pos) {
             // Reduce thread-local buffer into shared output
             for (int i = 0; i < head_dim; i++) {
                 #pragma omp atomic
-                xb[i] += tmp[i];
+                x_rms_norm[i] += tmp[i];
             }
         }
     }
@@ -492,10 +492,10 @@ float *forward(Transformer *transformer, int token, int pos) {
         s->v = s->value_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->xb, x, w->att_rms_norm + l*dim, dim);
+        rmsnorm(s->x_rms_norm, x, w->att_rms_norm + l*dim, dim);
 
         // Quantize for matmul efficiency.
-        quantize(&s->xq, s->xb, dim);
+        quantize(&s->xq, s->x_rms_norm, dim);
 
         // Compute Q, K, V for this timestep.
         matmul(s->q, &s->xq, w->wq + l, dim, all_heads_dim);
@@ -531,19 +531,19 @@ float *forward(Transformer *transformer, int token, int pos) {
         attention(p, s, l, pos);
 
         // final matmul to get the output of the attention
-        quantize(&s->xq, s->xb, all_heads_dim);
-        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, dim);
+        quantize(&s->xq, s->x_rms_norm, all_heads_dim);
+        matmul(s->x_rms_norm, &s->xq, w->wo + l, all_heads_dim, dim);
 
         // residual connection back into x
         for (int i = 0; i < dim; i++)
-            x[i] += s->xb[i];
+            x[i] += s->x_rms_norm[i];
 
         // ffn rmsnorm
-        rmsnorm(s->xb, x, w->ffn_rms_norm + l*dim, dim);
+        rmsnorm(s->x_rms_norm, x, w->ffn_rms_norm + l*dim, dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        quantize(&s->xq, s->xb, dim);
+        quantize(&s->xq, s->x_rms_norm, dim);
         matmul(s->hb, &s->xq, w->w1 + l, dim, hidden_dim);
         matmul(s->hb2, &s->xq, w->w3 + l, dim, hidden_dim);
 
@@ -552,11 +552,11 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // final matmul to get the output of the ffn
         quantize(&s->hq, s->hb, hidden_dim);
-        matmul(s->xb, &s->hq, w->w2 + l, hidden_dim, dim);
+        matmul(s->x_rms_norm, &s->hq, w->w2 + l, hidden_dim, dim);
 
         // residual connection
         for (int i = 0; i < dim; i++)
-            x[i] += s->xb[i];
+            x[i] += s->x_rms_norm[i];
     }
 
     // final rmsnorm
