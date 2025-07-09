@@ -35,10 +35,66 @@
 #define MAX_SEQ_LEN 32768
 
 /**
- * Global Group Size
+ * 8-Bit Quantization
  */
 
 int GS = 1; // group size global for quantization of the weights
+
+typedef struct Q8Tensor {
+    int8_t *q;    // quantized values
+    float *s; // scaling factors
+} Q8Tensor;
+
+/* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at *ptr */
+Q8Tensor *init_quantized_tensors(void **ptr, int n, int size_each) {
+    void *p = *ptr;
+    Q8Tensor *res = malloc(n * sizeof(Q8Tensor));
+
+    for (int i = 0; i < n; i++) {
+        /* map quantized int8 values*/
+        res[i].q = (int8_t*)p;
+        p = (int8_t*)p + size_each;
+        /* map scale factors */
+        res[i].s = (float*)p;
+        p = (float*)p + size_each / GS;
+    }
+    *ptr = p; // advance ptr to current position
+    return res;
+}
+
+void quantize(Q8Tensor *qx, float *x, int n) {
+    const int num_groups = n / GS;
+    const float Q_MAX = 127.0f;
+
+    for (int group = 0; group < num_groups; group++) {
+        float* xg  = x + group * GS;
+        int8_t* qg = qx->q + group * GS;
+
+        // Find max absolute value
+        float wmax = fabsf(xg[0]);
+        #pragma omp simd reduction(max:wmax)
+        for (int i = 1; i < GS; i++) {
+            wmax = fmaxf(wmax, fabsf(xg[i]));
+        }
+
+        float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
+        qx->s[group] = scale;
+
+        /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
+        #pragma omp parallel for
+        for (int i = 0; i < GS; i++) {
+            float q = xg[i] / scale;
+            qg[i] = (int8_t) fminf(fmaxf(roundf(q), -Q_MAX), Q_MAX);
+        }
+    }
+}
+
+void dequantize(Q8Tensor *qx, float *x, int n) {
+    #pragma omp parallel for
+    for (int i = 0; i < n; i++) {
+        x[i] = qx->q[i] * qx->s[i / GS];
+    }
+}
 
 /**
  * Qwen3ForCausalLM Architecture
@@ -58,11 +114,6 @@ typedef struct Params {
     int shared_classifier; // 1 if cls == p_tokens
     int group_size; // quantization group size (export.py uses 64)
 } Params;
-
-typedef struct Q8Tensor {
-    int8_t *q;    // quantized values
-    float *s; // scaling factors
-} Q8Tensor;
 
 /**
  * Note: weights.* fields are either:
@@ -178,57 +229,6 @@ void free_run_state(ForwardState* s) {
 
 // ----------------------------------------------------------------------------
 // Quantization functions
-
-void dequantize(Q8Tensor *qx, float *x, int n) {
-    #pragma omp parallel for
-    for (int i = 0; i < n; i++) {
-        x[i] = qx->q[i] * qx->s[i / GS];
-    }
-}
-
-void quantize(Q8Tensor *qx, float *x, int n) {
-    const int num_groups = n / GS;
-    const float Q_MAX = 127.0f;
-
-    for (int group = 0; group < num_groups; group++) {
-        float* xg  = x + group * GS;
-        int8_t* qg = qx->q + group * GS;
-
-        // Find max absolute value
-        float wmax = fabsf(xg[0]);
-        #pragma omp simd reduction(max:wmax)
-        for (int i = 1; i < GS; i++) {
-            wmax = fmaxf(wmax, fabsf(xg[i]));
-        }
-
-        float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
-        qx->s[group] = scale;
-
-        /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
-        #pragma omp parallel for
-        for (int i = 0; i < GS; i++) {
-            float q = xg[i] / scale;
-            qg[i] = (int8_t) fminf(fmaxf(roundf(q), -Q_MAX), Q_MAX);
-        }
-    }
-}
-
-/* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at *ptr */
-Q8Tensor *init_quantized_tensors(void **ptr, int n, int size_each) {
-    void *p = *ptr;
-    Q8Tensor *res = malloc(n * sizeof(Q8Tensor));
-
-    for (int i = 0; i < n; i++) {
-        /* map quantized int8 values*/
-        res[i].q = (int8_t*)p;
-        p = (int8_t*)p + size_each;
-        /* map scale factors */
-        res[i].s = (float*)p;
-        p = (float*)p + size_each / GS;
-    }
-    *ptr = p; // advance ptr to current position
-    return res;
-}
 
 void memory_map_weights(Weights *w, Params *p, void *ptr) {
     // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
