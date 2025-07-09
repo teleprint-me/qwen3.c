@@ -39,7 +39,7 @@ int GS = 1; // group size global for quantization of the weights
 // Transformer model
 
 typedef struct Config {
-    int magic_number; // checkpoint magic number
+    int magic; // checkpoint magic number
     int version; // file format version
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -264,7 +264,7 @@ void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weigh
     // checkpoint format is 256-byte header, and then the model weights
 
     memcpy(config, *data, sizeof(Config));
-    if (config->magic_number != 0x7177656E) { fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint); exit(EXIT_FAILURE); }
+    if (config->magic != 0x7177656E) { fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint); exit(EXIT_FAILURE); }
     if (config->version != 1) { fprintf(stderr, "Checkpoint %s is version %d, need version 1\n", checkpoint, config->version); exit(EXIT_FAILURE); }
 
     if (ctx_length != 0 && ctx_length <= config->seq_len)
