@@ -56,7 +56,6 @@ from jinja2 import Template
 from tokenizers import Tokenizer
 from transformers import AutoTokenizer
 
-
 #
 # HuggingFace Tokenizer
 #
