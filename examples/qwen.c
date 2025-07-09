@@ -110,8 +110,9 @@ typedef struct ForwardState {
     float* v; // Value (n_kv_heads * head_dim)
     float* scores; // Attention scores (n_heads * seq_len)
 
-    float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
-    float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
+    // Feed-forward network
+    float* mlp_in; // w1(x) = mlp_in (hidden_dim)
+    float* mlp_gate; // w3(x) = mlp_gate (hidden_dim)
 
     // Output
     float* logits; // Final output logits (vocab_size)
@@ -121,7 +122,7 @@ typedef struct ForwardState {
     float* v_cache; // Cached values (n_layers, seq_len, kv_dim)
 
     Q8Tensor xq; // quantized x (dim,)
-    Q8Tensor hq; // quantized hb (hidden_dim,)
+    Q8Tensor hq; // quantized mlp_in (hidden_dim,)
 } ForwardState;
 
 typedef struct Transformer {
@@ -139,8 +140,8 @@ void malloc_run_state(ForwardState* s, Params *p) {
 
     s->x = calloc(p->dim, sizeof(float));
     s->x_rms_norm = calloc(all_heads_dim, sizeof(float));
-    s->hb = calloc(p->hidden_dim, sizeof(float));
-    s->hb2 = calloc(p->hidden_dim, sizeof(float));
+    s->mlp_in = calloc(p->hidden_dim, sizeof(float));
+    s->mlp_gate = calloc(p->hidden_dim, sizeof(float));
     s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
     s->hq = (Q8Tensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
     s->q = calloc(all_heads_dim, sizeof(float));
@@ -150,7 +151,7 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->v_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
-    if (!s->x || !s->x_rms_norm || !s->hb || !s->hb2 || !s->q
+    if (!s->x || !s->x_rms_norm || !s->mlp_in || !s->mlp_gate || !s->q
      || !s->scores || !s->logits || !s->k_cache
      || !s->v_cache) {
         fprintf(stderr, "malloc failed!\n");
@@ -161,8 +162,8 @@ void malloc_run_state(ForwardState* s, Params *p) {
 void free_run_state(ForwardState* s) {
     free(s->x);
     free(s->x_rms_norm);
-    free(s->hb);
-    free(s->hb2);
+    free(s->mlp_in);
+    free(s->mlp_gate);
     free(s->xq.q);
     free(s->xq.s);
     free(s->hq.q);
@@ -465,12 +466,12 @@ float silu(float x) {
 
 /// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
 void swish(ForwardState* s, int hidden_dim) {
-    float* hb  = s->hb;  // W1(x)
-    float* hb2 = s->hb2; // W3(x)
+    float* mlp_in  = s->mlp_in;  // W1(x)
+    float* mlp_gate = s->mlp_gate; // W3(x)
 
     #pragma omp parallel for
     for (int i = 0; i < hidden_dim; i++) {
-        hb[i] = silu(hb[i]) * hb2[i];
+        mlp_in[i] = silu(mlp_in[i]) * mlp_gate[i];
     }
 }
 
@@ -550,14 +551,14 @@ float *forward(Transformer *transformer, int token, int pos) {
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
         quantize(&s->xq, s->x_rms_norm, dim);
-        matmul(s->hb, &s->xq, w->w1 + l, dim, hidden_dim);
-        matmul(s->hb2, &s->xq, w->w3 + l, dim, hidden_dim);
+        matmul(s->mlp_in, &s->xq, w->w1 + l, dim, hidden_dim);
+        matmul(s->mlp_gate, &s->xq, w->w3 + l, dim, hidden_dim);
 
         // SwiGLU non-linearity
         swish(s, hidden_dim);
 
         // final matmul to get the output of the ffn
-        quantize(&s->hq, s->hb, hidden_dim);
+        quantize(&s->hq, s->mlp_in, hidden_dim);
         matmul(s->x_rms_norm, &s->hq, w->w2 + l, hidden_dim, dim);
 
         // residual connection
