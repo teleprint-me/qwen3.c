@@ -162,6 +162,33 @@ def quantize_q8_0(tensor: Tensor, group_size: int) -> Q8Tensor:
     return Q8Tensor(quant=quant, scale=scale, error=error)
 
 
+def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: int) -> None:
+    """
+    Quantizes and serializes a list of weights to Q8_0 format.
+
+    Args:
+        buffer: Open binary file to write serialized output.
+        weights: List of float32 weight tensors to be quantized.
+        group_size: Group size for quantization (must divide tensor.numel()).
+    """
+    errors = []
+
+    for i, tensor in enumerate(weights):
+        q8 = quantize_q8_0(tensor, group_size)
+        serialize_int8(buffer, q8.quant)
+        serialize_fp32(buffer, q8.scale)
+        errors.append((q8.error, tensor.shape))
+
+        print(
+            f"{i+1}/{len(weights)} quantized {tuple(tensor.shape)} "
+            f"to Q8_0 with max error {q8.error:.8f}"
+        )
+
+    if errors:
+        errors.sort(reverse=True)
+        print(f"max quantization group error across all weights: {errors[0][0]:.8f}")
+
+
 #
 # PyTorch weight conversion
 #
@@ -258,24 +285,7 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
             ),
         )
 
-    # now let's write out all the params that we are quantizing to Q8_0
-    # note we skip classifier weights, which are shared with the embedding
-    ew = []
-    for i, w in enumerate(weights):
-        # quantize this weight
-        q, s, err = q8_tensor(w, group_size)
-        # save the int8 weights to file
-        serialize_int8(out_file, q)  # save the tensor in int8
-        serialize_fp32(out_file, s)  # save scale factors
-        # logging
-        ew.append((err, w.shape))
-        print(
-            f"{i+1}/{len(weights)} quantized {tuple(w.shape)} to Q8_0 with max error {err:.8f}"
-        )
-
-    # print the highest error across all weights, should be very small, e.g. O(~0.001)
-    ew.sort(reverse=True)
-    print(f"max quantization group error across all weights: {ew[0][0]:.8f}")
+    write_q8_weights(out_file, weights, group_size)
 
     # write to binary file
     out_file.close()
