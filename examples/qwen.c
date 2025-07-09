@@ -23,13 +23,8 @@
 #include <string.h>
 #include <fcntl.h>
 #include <omp.h>
-
-#if defined _WIN32
-    #include "win.h"
-#else
-    #include <unistd.h>
-    #include <sys/mman.h>
-#endif
+#include <unistd.h>
+#include <sys/mman.h>
 
 // ----------------------------------------------------------------------------
 // Globals
@@ -249,13 +244,8 @@ void read_checkpoint(char *checkpoint, Params *config, TransformerWeights* weigh
     FILE *file = fopen(checkpoint, "rb");
     if (!file) { fprintf(stderr, "Couldn't open checkpoint %s\n", checkpoint); exit(EXIT_FAILURE); }
 
-    #if defined _WIN32
-        _fseeki64(file, 0, SEEK_END); // move file pointer to end of file
-        *file_size = _ftelli64(file); // get the file size, in bytes
-    #else
-        fseek(file, 0, SEEK_END); // move file pointer to end of file
-        *file_size = ftell(file); // get the file size, in bytes
-    #endif
+    fseek(file, 0, SEEK_END); // move file pointer to end of file
+    *file_size = ftell(file); // get the file size, in bytes
 
     *data = mmap(NULL, *file_size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
     if (*data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); exit(EXIT_FAILURE); }
