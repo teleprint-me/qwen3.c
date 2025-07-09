@@ -36,39 +36,35 @@
 
 /**
  * 8-Bit Quantization
+ *
+ * @todo q8: Memory Management Refactor
+ *
+ * - Decouple Q8Tensor mapping (mmap) from allocation (malloc)
+ * - Use explicit ownership flags or wrapper structs if heap allocation is generalized
+ * - Replace GS global with model-specific group size (Params.group_size)
+ *
+ * @{
  */
 
-int GS = 1; // group size global for quantization of the weights
+// TODO(q8): Replace with `Params.group_size` during full allocator refactor.
+//           This is currently required to calculate the number of values per quantization group.
+int GS = 2; // global quantization group size
 
 typedef struct Q8Tensor {
-    int8_t *q;    // quantized values
-    float *s; // scaling factors
+    float* s; // scaling factors per group
+    int8_t* q; // quantized values
 } Q8Tensor;
 
-/* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at *ptr */
-Q8Tensor *init_quantized_tensors(void **ptr, int n, int size_each) {
-    void *p = *ptr;
-    Q8Tensor *res = malloc(n * sizeof(Q8Tensor));
-
-    for (int i = 0; i < n; i++) {
-        /* map quantized int8 values*/
-        res[i].q = (int8_t*)p;
-        p = (int8_t*)p + size_each;
-        /* map scale factors */
-        res[i].s = (float*)p;
-        p = (float*)p + size_each / GS;
-    }
-    *ptr = p; // advance ptr to current position
-    return res;
-}
-
-void quantize(Q8Tensor *qx, float *x, int n) {
+/**
+ * @brief Quantize a tensor symmetrically to int8 in Q8_0 format ([-127, 127]).
+ */
+void q8_quantize(Q8Tensor *qt, float *x, int n) {
     const int num_groups = n / GS;
     const float Q_MAX = 127.0f;
 
     for (int group = 0; group < num_groups; group++) {
         float* xg  = x + group * GS;
-        int8_t* qg = qx->q + group * GS;
+        int8_t* qg = qt->q + group * GS;
 
         // Find max absolute value
         float wmax = fabsf(xg[0]);
@@ -78,7 +74,7 @@ void quantize(Q8Tensor *qx, float *x, int n) {
         }
 
         float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
-        qx->s[group] = scale;
+        qt->s[group] = scale;
 
         /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
         #pragma omp parallel for
@@ -89,12 +85,54 @@ void quantize(Q8Tensor *qx, float *x, int n) {
     }
 }
 
-void dequantize(Q8Tensor *qx, float *x, int n) {
+/**
+ * @brief Dequantize values from int8 to float32 using per-group scale factors.
+ *
+ * @param qt Q8Tensor to read from.
+ * @param x  Output buffer (float32).
+ * @param n  Total number of elements.
+ */
+void q8_dequantize(Q8Tensor *qt, float *x, int n) {
     #pragma omp parallel for
     for (int i = 0; i < n; i++) {
-        x[i] = qx->q[i] * qx->s[i / GS];
+        x[i] = qt->q[i] * qt->s[i / GS];
     }
 }
+
+/**
+ * @brief Creates an array of Q8Tensor structs mapped to a linear memory buffer.
+ *
+ * This function does NOT allocate the underlying `q` or `s` buffers — it only
+ * creates structs that point into an existing memory region, typically an
+ * mmap-backed model file.
+ *
+ * @param buffer The starting address of the mapped memory region.
+ * @param n Number of tensors.
+ * @param size Number of elements per tensor.
+ * @return Q8Tensor* Array of Q8Tensor structs (free with `free()` only).
+ *
+ * @note Ownership: Do NOT free `q` or `s` from the returned tensors.
+ */
+Q8Tensor* q8_tensor_map(void* buffer, int n, int size) {
+    if (!buffer || 0 == n || 0 == size) return NULL;
+
+    Q8Tensor* qt = calloc(n, sizeof(Q8Tensor));
+    if (!qt) return NULL;
+
+    for (int i = 0; i < n; i++) {
+        /* map quantized int8 values*/
+        qt[i].q = (int8_t*) buffer;
+        buffer = (int8_t*) buffer + size;
+
+        /* map scale factors */
+        qt[i].s = (float*) buffer;
+        buffer = (float*) buffer + size / GS;
+    }
+
+    return qt;
+}
+
+/** @} */
 
 /**
  * Qwen3ForCausalLM Architecture
@@ -247,21 +285,21 @@ void memory_map_weights(Weights *w, Params *p, void *ptr) {
 
     // now read all the quantized weights
     ptr = (void *)fptr; // now cast the pointer back to void*
-    w->qe = init_quantized_tensors(&ptr, 1, p->vocab_size * p->dim);
-    // dequantize token embedding table
+    w->qe = q8_tensor_map(&ptr, 1, p->vocab_size * p->dim);
+    // q8_dequantize token embedding table
     w->fe = malloc(p->vocab_size * p->dim * sizeof(float));
-    dequantize(w->qe, w->fe, p->vocab_size * p->dim);
+    q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim);
 
-    w->wq = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
-    w->wk = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wv = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wo = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    w->wq = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    w->wk = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wv = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wo = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
 
-    w->w1 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
-    w->w2 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
-    w->w3 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w1 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w2 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w3 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
 
-    w->cls = p->shared_classifier ? w->qe : init_quantized_tensors(&ptr, 1, p->dim * p->vocab_size);
+    w->cls = p->shared_classifier ? w->qe : q8_tensor_map(&ptr, 1, p->dim * p->vocab_size);
 }
 
 void read_checkpoint(char *checkpoint, Params *config, Weights* weights, float** data, ssize_t* file_size, int ctx_length) {
@@ -503,7 +541,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         rmsnorm(s->x_rms_norm, x, w->att_rms_norm + l*dim, dim);
 
         // Quantize for matmul efficiency.
-        quantize(&s->qx, s->x_rms_norm, dim);
+        q8_quantize(&s->qx, s->x_rms_norm, dim);
 
         // Compute Q, K, V for this timestep.
         matmul(s->q, &s->qx, w->wq + l, dim, all_heads_dim);
@@ -539,7 +577,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         attention(p, s, l, pos);
 
         // final matmul to get the output of the attention
-        quantize(&s->qx, s->x_rms_norm, all_heads_dim);
+        q8_quantize(&s->qx, s->x_rms_norm, all_heads_dim);
         matmul(s->x_rms_norm, &s->qx, w->wo + l, all_heads_dim, dim);
 
         // residual connection back into x
@@ -551,7 +589,7 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        quantize(&s->qx, s->x_rms_norm, dim);
+        q8_quantize(&s->qx, s->x_rms_norm, dim);
         matmul(s->mlp_in, &s->qx, w->w1 + l, dim, hidden_dim);
         matmul(s->mlp_gate, &s->qx, w->w3 + l, dim, hidden_dim);
 
@@ -559,7 +597,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         swish(s, hidden_dim);
 
         // final matmul to get the output of the ffn
-        quantize(&s->qh, s->mlp_in, hidden_dim);
+        q8_quantize(&s->qh, s->mlp_in, hidden_dim);
         matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, dim);
 
         // residual connection
@@ -571,7 +609,7 @@ float *forward(Transformer *transformer, int token, int pos) {
     rmsnorm(x, x, w->out_rms_norm, dim);
 
     // classifier into logits
-    quantize(&s->qx, x, dim);
+    q8_quantize(&s->qx, x, dim);
     matmul(s->logits, &s->qx, w->cls, dim, p->vocab_size);
     return s->logits;
 }
