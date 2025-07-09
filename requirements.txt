@@ -2,3 +2,5 @@ Jinja2
 numpy
 torch==2.7.1+cpu
 transformers
+tokenizers
+huggingface-hub
