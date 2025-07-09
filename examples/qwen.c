@@ -26,10 +26,18 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
+#define QWEN_MAGIC 0x7177656E
+#define QWEN_VERSION 1
+
+#define QTKN_MAGIC 0x71746B6E
+#define QTKN_VERSION 1
+
+#define MAX_SEQ_LEN 32768
 
 /**
  * Global Group Size
  */
+
 int GS = 1; // group size global for quantization of the weights
 
 /**
