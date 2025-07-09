@@ -120,42 +120,46 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
 # Quantize weights
 #
 
+
 @dataclass
 class Q8Tensor:
-    quant: Tensor
-    scale: Tensor
-    error: float
+    """Quantized tensor with symmetric Q8_0 representation."""
+
+    quant: Tensor  # int8 tensor
+    scale: Tensor  # fp32 scale vector (per group)
+    error: float  # max group-wise quantization error
 
 
-# TODO: Group size is the number of elements per thread
-# NOTE: In model.py, this is equivalent to model_parallel_size
-# This is not obvious at first glance and should be renamed for clarity.
-# This is number of tensors per thread?
-def q8_tensor(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
+def quantize_q8_0(tensor: Tensor, group_size: int) -> Q8Tensor:
     """
-    takes a tensor and returns the Q8_0 quantized version
-    i.e. symmetric quantization into int8, range [-127,127]
+    Quantize a tensor symmetrically to int8 in Q8_0 format ([-127, 127]).
+
+    Args:
+        tensor: A float or half tensor to be quantized.
+        group_size: Number of values per quantization group.
+
+    Returns:
+        Q8Tensor: Quantized output, scale factors, and max error.
     """
-    assert w.numel() % group_size == 0
-    ori_shape = w.shape
-    w = w.float()  # convert to float32
-    w = w.reshape(-1, group_size)
-    # find the max in each group
+    assert (
+        tensor.numel() % group_size == 0
+    ), f"Tensor size {tensor.numel()} not divisible by group size {group_size}"
+
+    # Flatten into [num_groups, group_size]
+    w = tensor.float().reshape(-1, group_size)
+
+    # Compute scale per group
     wmax = torch.abs(w).max(dim=1).values
-    # calculate the scaling factor such that float = quant * scale
-    scale = wmax / 127.0
-    # scale into range [-127, 127]
-    quant = w / scale[:, None]
-    # round to nearest integer
-    int8val = torch.round(quant).to(torch.int8)
-    # dequantize by rescaling
-    fp32val = (int8val.float() * scale[:, None]).view(-1)
-    fp32valr = fp32val.reshape(-1, group_size)
-    # calculate the max error in each group
-    err = torch.abs(fp32valr - w).max(dim=1).values
-    # find the max error across all groups
-    maxerr = err.max().item()
-    return int8val, scale, maxerr
+    scale = wmax / 127.0  # ensures full dynamic range
+
+    # Quantize
+    quant = torch.round(w / scale[:, None]).to(torch.int8)
+
+    # Dequantize to check reconstruction error
+    dequant = (quant.float() * scale[:, None]).reshape(-1)
+    error = torch.abs(dequant - w.view(-1)).max().item()
+
+    return Q8Tensor(quant=quant, scale=scale, error=error)
 
 
 #
