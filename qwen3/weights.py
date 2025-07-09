@@ -27,6 +27,8 @@ from qwen3.model import ModelArgs, Transformer
 
 
 def model_params(input_dir: str) -> ModelArgs:
+    print("[Weights] Loading model hyper parameters.")
+
     params = ModelArgs()
 
     config_path = os.path.join(input_dir, "config.json")
@@ -53,6 +55,8 @@ def model_params(input_dir: str) -> ModelArgs:
 
 
 def model_load(params: ModelArgs, state: dict[str, Tensor]) -> Transformer:
+    print("[Weights] Loading and initializing Qwen3ForCausalLM weights.")
+
     model = Transformer(params)
     model.tok_embeddings.weight = nn.Parameter(state["model.embed_tokens.weight"])
     model.norm.weight = nn.Parameter(state["model.norm.weight"])
@@ -181,7 +185,7 @@ def export_group_adjust_size(group: ExportGroup) -> int:
     while group.model.params.dim % group.size != 0:
         group.size //= 2
         print(
-            f"[GroupSize] Warning: Reducing group size to {group.size} to fit hidden_dim."
+            f"[Weights] Warning: Reducing group size to {group.size} to fit hidden_dim."
         )
     return group.size
 
@@ -191,6 +195,8 @@ def export_group_weights(group: ExportGroup) -> list[Tensor]:
     Return weights in the fixed serialization order expected by the C-side.
     Does not include the output projection (classifier).
     """
+    print("[Weights] Exporting grouped weights.")
+
     return [
         group.model.tok_embeddings.weight,
         *[layer.attention.wq.weight for layer in group.model.layers],
@@ -241,6 +247,8 @@ def export_group_write_header(group: ExportGroup) -> None:
       - [ 44] int32  group_size
       - [ 48-255] padding (zeros)
     """
+    print("[Weights] Exporting model header: magic=qwen, version=1.")
+
     group.buffer.write(struct.pack("I", 0x7177656E))  # magic: "qwen"
     group.buffer.write(struct.pack("i", 1))  # version
 
@@ -269,6 +277,8 @@ def export_group_write_header(group: ExportGroup) -> None:
 
 def export_group_write_fp32_norm_weights(group: ExportGroup) -> None:
     """Serialize attention and MLP RMSNorm parameters as fp32."""
+    print("[Weights] [float32] Exporting normalized weights.")
+
     for layer in group.model.layers:  # attention norms
         serialize_fp32(group.buffer, layer.attention_norm.weight)
     for layer in group.model.layers:  # MLP norms
@@ -278,6 +288,8 @@ def export_group_write_fp32_norm_weights(group: ExportGroup) -> None:
 
 def export_group_write_fp32_attn_weights(group: ExportGroup) -> None:
     """Serialize lq/lk RMSNorm weights (Qwen3-specific) as fp32."""
+    print("[Weights] [float32] Exporting attention weights.")
+
     for layer in group.model.layers:
         serialize_fp32(
             group.buffer,
@@ -307,6 +319,8 @@ def export_group_write_q8_weights(group: ExportGroup) -> None:
         weights: List of float32 weight tensors to be quantized.
         group_size: Group size for quantization (must divide tensor.numel()).
     """
+    print("[Weights] [q8_0] Exporting model weights.")
+
     errors = []
 
     for i, tensor in enumerate(group.weights):
@@ -316,7 +330,8 @@ def export_group_write_q8_weights(group: ExportGroup) -> None:
         errors.append((q8.error, tensor.shape))
 
         print(
-            f"{i+1}/{len(group.weights)} quantized {tuple(tensor.shape)} "
+            f"[{i+1:03d}/{len(group.weights)}] "
+            f"quantized {tuple(tensor.shape)} "
             f"to Q8_0 with max error {q8.error:.8f}"
         )
 
