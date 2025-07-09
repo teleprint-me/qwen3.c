@@ -18,7 +18,6 @@ import numpy as np
 import torch
 from torch import Tensor
 from torch import nn
-from transformers import AutoModelForCausalLM
 from qwen3.model import ModelArgs, Transformer
 
 #
@@ -367,6 +366,7 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
+    from transformers import AutoModelForCausalLM
 
     parser = ArgumentParser()
     parser.add_argument("output_file", type=str, help="The output file path.")

@@ -54,7 +54,6 @@ from pathlib import Path
 
 from jinja2 import Template
 from tokenizers import Tokenizer
-from transformers import AutoTokenizer
 
 #
 # Jinja2 Template Conversion
@@ -253,6 +252,7 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
+    from transformers import AutoTokenizer
 
     parser = ArgumentParser()
     parser.add_argument("output_file", type=str, help="The output file path.")
