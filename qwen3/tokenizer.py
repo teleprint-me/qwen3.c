@@ -1,6 +1,49 @@
 """
 @file qwen3.tokenizer
-@brief Converts a Tokenizer to a custom binary format.
+
+Qwen3 Tokenizer Exporter
+=========================
+
+This module extracts and converts a HuggingFace tokenizer (specifically Qwen3)
+into a minimal binary format suitable for high-performance inference in C.
+
+Key Components:
+---------------
+- `template_write(...)`: Renders chat templates using the tokenizer's Jinja2 format.
+- `tokenizer_vocab(...)`: Parses vocabulary, merge ranks, and scoring data from tokenizer files.
+- `tokenizer_write(...)`: Serializes token data to a compact binary file, including:
+    - max token length
+    - BOS/EOS token IDs
+    - token byte encodings
+    - merge-based pseudo-scores
+
+Design Notes:
+-------------
+- Output format is custom and aligned for direct use in low-level inference engines.
+- Token byte encoding follows GPT-2's byte-to-unicode reversible mapping.
+- Template rendering inverts the `enable_thinking` logic due to model-specific behavior.
+- No fallback or default token encoding is permitted: behavior must be deterministic.
+- BOS/EOS IDs are extracted from `config.json` — fallback values are used if missing.
+
+Binary File Layout:
+-------------------
+[int32] magic (0x71746B6E)  # 'qtkn'
+[int32] version             # format version (1)
+[int32] max_token_length
+[int32] bos_token_id
+[int32] eos_token_id
+[
+  float32 score,
+  int32 length,
+  uint8[] token_bytes
+] * num_tokens
+
+This module is designed for clarity and reproducibility over generality.
+No additional dependencies beyond Jinja2, tokenizers, and transformers.
+
+Usage:
+------
+$ python -m qwen3.tokenizer <output_prefix> <input_dir>
 """
 
 import json
