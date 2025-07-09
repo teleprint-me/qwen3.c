@@ -11,7 +11,8 @@ import json
 import os
 import struct
 from io import BufferedWriter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import torch
@@ -171,9 +172,9 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
 class ExportGroup:
     size: int
     model: Transformer
-    weights: list[Tensor]
-    shared_classifier: bool
-    buffer: BufferedWriter
+    weights: list[Tensor] = field(default_factory=list)
+    shared_classifier: bool = False
+    buffer: Optional[BufferedWriter] = None
 
 
 def export_group_adjust_size(group: ExportGroup) -> int:
