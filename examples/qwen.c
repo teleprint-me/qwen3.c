@@ -1,5 +1,5 @@
 /**
- * @file qwen.c
+ * @file examples/qwen.c
  * @brief Inference for Qwen-3 Transformer model in pure C, int8 quantized forward pass.
  *
  * Qwen3 has the following features:
@@ -35,30 +35,38 @@
 #define MAX_SEQ_LEN 32768
 
 /**
- * 8-Bit Quantization
+ * @file examples/qwen.c
+ * @brief 8-bit symmetric quantization utilities for Qwen model inference.
  *
  * @todo q8: Memory Management Refactor
- *
- * - Decouple Q8Tensor mapping (mmap) from allocation (malloc)
- * - Use explicit ownership flags or wrapper structs if heap allocation is generalized
- * - Replace GS global with model-specific group size (Params.group_size)
+ *   - Decouple Q8Tensor mapping (mmap) from allocation (malloc)
+ *   - Use explicit ownership flags or wrapper structs if heap allocation is generalized
+ *   - Replace GS global with model-specific group size (Params.group_size)
  *
  * @{
  */
 
-// TODO(q8): Replace with `Params.group_size` during full allocator refactor.
-//           This is currently required to calculate the number of values per quantization group.
+/// @note Replace with `Params.group_size` during full allocator refactor.
+/// Currently required to calculate values per quantization group.
 int GS = 2; // global quantization group size
 
+/**
+ * @struct Q8Tensor
+ * @brief A quantized tensor with int8 values and per-group scale factors.
+ */
 typedef struct Q8Tensor {
-    float* s; // scaling factors per group
-    int8_t* q; // quantized values
+    float* s;     ///< scaling factors per group
+    int8_t* q;    ///< quantized values
 } Q8Tensor;
 
 /**
- * @brief Quantize a tensor symmetrically to int8 in Q8_0 format ([-127, 127]).
+ * @brief Quantize a float32 tensor symmetrically to int8 using Q8_0 format.
+ *
+ * @param qt Q8Tensor to write quantized output into.
+ * @param x  Input float32 tensor of length `n`.
+ * @param n  Total number of elements in the input/output.
  */
-void q8_quantize(Q8Tensor *qt, float *x, int n) {
+void q8_quantize(Q8Tensor* qt, float* x, int n) {
     const int num_groups = n / GS;
     const float Q_MAX = 127.0f;
 
@@ -73,10 +81,11 @@ void q8_quantize(Q8Tensor *qt, float *x, int n) {
             wmax = fmaxf(wmax, fabsf(xg[i]));
         }
 
-        float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
+        // Compute scaling factor
+        float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX);
         qt->s[group] = scale;
 
-        /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
+        // Quantize with clamping to [-127, 127]
         #pragma omp parallel for
         for (int i = 0; i < GS; i++) {
             float q = xg[i] / scale;
@@ -86,13 +95,13 @@ void q8_quantize(Q8Tensor *qt, float *x, int n) {
 }
 
 /**
- * @brief Dequantize values from int8 to float32 using per-group scale factors.
+ * @brief Dequantize int8 tensor back to float32 using per-group scale factors.
  *
  * @param qt Q8Tensor to read from.
- * @param x  Output buffer (float32).
- * @param n  Total number of elements.
+ * @param x  Output float32 tensor of length `n`.
+ * @param n  Number of elements to dequantize.
  */
-void q8_dequantize(Q8Tensor *qt, float *x, int n) {
+void q8_dequantize(Q8Tensor* qt, float* x, int n) {
     #pragma omp parallel for
     for (int i = 0; i < n; i++) {
         x[i] = qt->q[i] * qt->s[i / GS];
@@ -100,21 +109,23 @@ void q8_dequantize(Q8Tensor *qt, float *x, int n) {
 }
 
 /**
- * @brief Creates an array of Q8Tensor structs mapped to a linear memory buffer.
+ * @brief Map an array of Q8Tensor structs to a linear buffer (e.g. from mmap).
  *
- * This function does NOT allocate the underlying `q` or `s` buffers — it only
- * creates structs that point into an existing memory region, typically an
- * mmap-backed model file.
+ * This function does not allocate memory for `q` or `s`. It only allocates
+ * the outer array of Q8Tensor structs and sets internal pointers to offsets
+ * within the given `buffer`.
  *
- * @param buffer The starting address of the mapped memory region.
- * @param n Number of tensors.
- * @param size Number of elements per tensor.
- * @return Q8Tensor* Array of Q8Tensor structs (free with `free()` only).
+ * @param buffer Starting address of a memory-mapped region.
+ * @param n      Number of Q8Tensor structs to map.
+ * @param size   Number of quantized values per tensor.
+ * @return       Pointer to allocated Q8Tensor array (free with `free()` only).
  *
- * @note Ownership: Do NOT free `q` or `s` from the returned tensors.
+ * @note Ownership:
+ *   - Do NOT free `q` or `s` of the returned tensors.
+ *   - Only the outer array returned by this function should be freed.
  */
 Q8Tensor* q8_tensor_map(void* buffer, int n, int size) {
-    if (!buffer || 0 == n || 0 == size) return NULL;
+    if (!buffer || n <= 0 || size <= 0) return NULL;
 
     Q8Tensor* qt = calloc(n, sizeof(Q8Tensor));
     if (!qt) return NULL;
