@@ -20,6 +20,85 @@ from transformers import AutoModelForCausalLM
 from qwen3.model import ModelArgs, Transformer
 
 #
+# Load params
+#
+
+
+def model_params(input_dir: str) -> ModelArgs:
+    params = ModelArgs()
+
+    config_path = os.path.join(input_dir, "config.json")
+    with open(config_path, "r") as f:
+        config_json = json.load(f)
+
+    params.dim = config_json.get("hidden_size", 2048)
+    params.n_layers = config_json.get("num_hidden_layers", 28)
+    params.n_heads = config_json.get("num_attention_heads", 16)
+    params.n_kv_heads = config_json.get("num_key_value_heads", 8)
+    params.vocab_size = config_json.get("vocab_size", 151936)
+    params.hidden_dim = config_json.get("intermediate_size", 6144)
+    params.norm_eps = config_json.get("rms_norm_eps", 1e-06)
+    params.max_seq_len = config_json.get("max_position_embeddings", 40960)
+    params.head_dim = config_json.get("head_dim", params.dim // params.n_heads)
+
+    print(params)
+    return params
+
+
+#
+# Load and initialize weights
+#
+
+
+def model_load(params: ModelArgs, input_dir: str) -> Transformer:
+    model = Transformer(params)
+
+    state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
+    model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])
+    model.norm.weight = nn.Parameter(state_dict["model.norm.weight"])
+    for layer in model.layers:
+        i = layer.layer_id
+        layer.attention_norm.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.input_layernorm.weight"]
+        )
+        layer.attention.wq.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
+        )
+        layer.attention.wk.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.k_proj.weight"]
+        )
+        layer.attention.wv.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
+        )
+        layer.attention.wo.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
+        )
+        layer.attention.lq.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.q_norm.weight"]
+        )
+        layer.attention.lk.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.self_attn.k_norm.weight"]
+        )
+        layer.ffn_norm.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
+        )
+        layer.feed_forward.w1.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.mlp.gate_proj.weight"]
+        )
+        layer.feed_forward.w2.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.mlp.down_proj.weight"]
+        )
+        layer.feed_forward.w3.weight = nn.Parameter(
+            state_dict[f"model.layers.{i}.mlp.up_proj.weight"]
+        )
+
+    # final classifier
+    model.output.weight = nn.Parameter(state_dict["lm_head.weight"])
+    model.eval()
+    return model
+
+
+#
 # Serialize weights
 #
 
@@ -72,9 +151,11 @@ def quantize_q80(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
     maxerr = err.max().item()
     return int8val, scale, maxerr
 
+
 #
 # PyTorch weight conversion
 #
+
 
 def model_write(model: Transformer, output_file: str, group_size: int = 64) -> None:
     """
@@ -189,83 +270,6 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     # write to binary file
     out_file.close()
     print(f"Written model checkpoint to {output_file}")
-
-
-#
-# Load params
-#
-
-
-def model_params(input_dir: str) -> ModelArgs:
-    params = ModelArgs()
-
-    config_path = os.path.join(input_dir, "config.json")
-    with open(config_path, "r") as f:
-        config_json = json.load(f)
-
-    params.dim = config_json.get("hidden_size", 2048)
-    params.n_layers = config_json.get("num_hidden_layers", 28)
-    params.n_heads = config_json.get("num_attention_heads", 16)
-    params.n_kv_heads = config_json.get("num_key_value_heads", 8)
-    params.vocab_size = config_json.get("vocab_size", 151936)
-    params.hidden_dim = config_json.get("intermediate_size", 6144)
-    params.norm_eps = config_json.get("rms_norm_eps", 1e-06)
-    params.max_seq_len = config_json.get("max_position_embeddings", 40960)
-    params.head_dim = config_json.get("head_dim", params.dim // params.n_heads)
-
-    print(params)
-    return params
-
-#
-# Load and initialize weights
-#
-
-def model_load(params: ModelArgs, input_dir: str) -> Transformer:
-    model = Transformer(params)
-
-    state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
-    model.tok_embeddings.weight = nn.Parameter(state_dict["model.embed_tokens.weight"])
-    model.norm.weight = nn.Parameter(state_dict["model.norm.weight"])
-    for layer in model.layers:
-        i = layer.layer_id
-        layer.attention_norm.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.input_layernorm.weight"]
-        )
-        layer.attention.wq.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.q_proj.weight"]
-        )
-        layer.attention.wk.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.k_proj.weight"]
-        )
-        layer.attention.wv.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.v_proj.weight"]
-        )
-        layer.attention.wo.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.o_proj.weight"]
-        )
-        layer.attention.lq.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.q_norm.weight"]
-        )
-        layer.attention.lk.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.self_attn.k_norm.weight"]
-        )
-        layer.ffn_norm.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.post_attention_layernorm.weight"]
-        )
-        layer.feed_forward.w1.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.gate_proj.weight"]
-        )
-        layer.feed_forward.w2.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.down_proj.weight"]
-        )
-        layer.feed_forward.w3.weight = nn.Parameter(
-            state_dict[f"model.layers.{i}.mlp.up_proj.weight"]
-        )
-
-    # final classifier
-    model.output.weight = nn.Parameter(state_dict["lm_head.weight"])
-    model.eval()
-    return model
 
 
 if __name__ == "__main__":
