@@ -167,9 +167,52 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
 #
 
 
-def write_q8_weights(
-    buffer: BufferedWriter, weights: list[Tensor], group_size: int
-) -> None:
+def model_adjust_group_size(model: Transformer, group_size: int) -> int:
+    while model.params.dim % group_size != 0:
+        group_size //= 2
+        print(
+            f"[GroupSize] Warning: Reducing group size to {group_size} to fit hidden_dim."
+        )
+    return group_size
+
+
+def model_export_weights(model: Transformer) -> list[Tensor]:
+    """
+    Return weights in the fixed serialization order expected by the C-side.
+    Does not include the output projection (classifier).
+    """
+    return [
+        model.tok_embeddings.weight,
+        *[layer.attention.wq.weight for layer in model.layers],
+        *[layer.attention.wk.weight for layer in model.layers],
+        *[layer.attention.wv.weight for layer in model.layers],
+        *[layer.attention.wo.weight for layer in model.layers],
+        *[layer.feed_forward.w1.weight for layer in model.layers],
+        *[layer.feed_forward.w2.weight for layer in model.layers],
+        *[layer.feed_forward.w3.weight for layer in model.layers],
+    ]
+
+
+def model_weights_are_tied(model: Transformer, weights: list[Tensor]) -> bool:
+    """
+    Appends the output projection weight if it's not tied to embeddings.
+    Returns True if tied, False otherwise.
+    """
+    shared = torch.equal(model.tok_embeddings.weight, model.output.weight)
+    if not shared:
+        weights.append(model.output.weight)
+    return shared
+
+
+def model_validate_weights(weights: list[Tensor], group_size: int) -> None:
+    for i, w in enumerate(weights):
+        assert w.numel() % group_size == 0, (
+            f"weight {i} with shape {tuple(w.shape)} has {w.numel()} elements, "
+            f"not divisible by group_size {group_size}"
+        )
+
+
+def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: int) -> None:
     """
     Quantizes and serializes a list of weights to Q8_0 format.
 
@@ -204,28 +247,10 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     - all other tensors (the rmsnorm params) are kept and exported in fp32
     - quantization is done in groups of group_size to reduce the effects of any outliers
     """
-    # let's first do some validation for this export type
-    while model.params.dim % group_size != 0:
-        group_size //= 2
-        print(f"BACKOFF: reducing group size to {group_size} to fit hidden_dim")
-    weights = [
-        model.tok_embeddings.weight,
-        *[layer.attention.wq.weight for layer in model.layers],
-        *[layer.attention.wk.weight for layer in model.layers],
-        *[layer.attention.wv.weight for layer in model.layers],
-        *[layer.attention.wo.weight for layer in model.layers],
-        *[layer.feed_forward.w1.weight for layer in model.layers],
-        *[layer.feed_forward.w2.weight for layer in model.layers],
-        *[layer.feed_forward.w3.weight for layer in model.layers],
-    ]
-    shared_classifier = torch.equal(model.tok_embeddings.weight, model.output.weight)
-
-    if not shared_classifier:
-        weights.append(model.output.weight)
-    for w in weights:
-        assert (
-            w.numel() % group_size == 0
-        ), f"weight {i} has numel {w.numel()}, not a multiple of group_size {group_size}"
+    group_size = model_adjust_group_size(model, group_size)
+    weights = model_export_weights(model)
+    shared_classifier = model_weights_are_tied(model, weights)
+    model_validate_weights(weights, group_size)
 
     # write
     out_file = open(output_file, "wb")
