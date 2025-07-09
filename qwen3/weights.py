@@ -1,6 +1,10 @@
 """
-@file qwen3.convert
-@brief Implements model conversion for Qwen3ForCausalLM architectures.
+@file qwen3.weights
+@brief Converts Qwen3ForCausalLM architectures to a custom binary format.
+
+This module provides utilities for extracting and converting the weights from
+float32 to symetric int8 quantization. The quantized weights are then serialized
+into a custom binary format.
 """
 
 import json
@@ -15,8 +19,9 @@ from torch import nn
 from transformers import AutoModelForCausalLM
 from qwen3.model import ModelArgs, Transformer
 
-# -----------------------------------------------------------------------------
-# common utilities
+#
+# Serialize weights
+#
 
 
 def serialize_fp32(buffer: BufferedWriter, w: Tensor) -> None:
@@ -31,6 +36,11 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
     d = w.detach().cpu().view(-1).numpy().astype(np.int8)
     b = struct.pack(f"{len(d)}b", *d)
     buffer.write(b)
+
+
+#
+# Quantize weights
+#
 
 
 # TODO: Group size is the number of elements per thread
@@ -62,8 +72,11 @@ def quantize_q80(w: Tensor, group_size: int) -> tuple[Tensor, Tensor, float]:
     maxerr = err.max().item()
     return int8val, scale, maxerr
 
+#
+# PyTorch weight conversion
+#
 
-def model_export(model: Transformer, output_file: str, group_size: int = 64) -> None:
+def model_write(model: Transformer, output_file: str, group_size: int = 64) -> None:
     """
     Export the model weights in Q8_0 into .bin file to be read from C.
     That is:
@@ -177,12 +190,13 @@ def model_export(model: Transformer, output_file: str, group_size: int = 64) -> 
     out_file.close()
     print(f"Written model checkpoint to {output_file}")
 
+
 #
-# Load / import functions
+# Load params
 #
 
 
-def load_params(input_dir: str) -> ModelArgs:
+def model_params(input_dir: str) -> ModelArgs:
     params = ModelArgs()
 
     config_path = os.path.join(input_dir, "config.json")
@@ -198,15 +212,15 @@ def load_params(input_dir: str) -> ModelArgs:
     params.norm_eps = config_json.get("rms_norm_eps", 1e-06)
     params.max_seq_len = config_json.get("max_position_embeddings", 40960)
     params.head_dim = config_json.get("head_dim", params.dim // params.n_heads)
-    params.bos_id = config_json.get("bos_token_id", 151643)
-    params.eos_id = config_json.get("eos_token_id", 151645)
 
     print(params)
     return params
 
+#
+# Load and initialize weights
+#
 
-def load_model(input_dir: str) -> Transformer:
-    params = load_params(input_dir)
+def model_load(params: ModelArgs, input_dir: str) -> Transformer:
     model = Transformer(params)
 
     state_dict = AutoModelForCausalLM.from_pretrained(input_dir).state_dict()
@@ -252,3 +266,15 @@ def load_model(input_dir: str) -> Transformer:
     model.output.weight = nn.Parameter(state_dict["lm_head.weight"])
     model.eval()
     return model
+
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+
+    parser = ArgumentParser()
+    parser.add_argument("output_file", type=str, help="The output file path.")
+    parser.add_argument("input_dir", type=str, help="The input dir path.")
+    args = parser.parse_args()
+
+    params = model_params(args.input_dir)
+    model = model_load(params, args.input_dir)
