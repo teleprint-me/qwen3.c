@@ -127,6 +127,8 @@ class Vocab:
 
 
 def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
+    print("[Tokenizer] Loading bos and eos ids.")
+
     # Hack: HuggingFace doesn’t expose bos/eos IDs directly
     config_path = Path(tokenizer.name_or_path) / "config.json"
     with open(config_path, "r", encoding="utf-8") as f:
@@ -136,6 +138,8 @@ def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
 
 def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[str, int]:
     """Construct a merge pair to rank index mapping."""
+    print("[Tokenizer] Generating merge-rank table.")
+
     tokenizer_path = Path(tokenizer.name_or_path) / "tokenizer.json"
     with open(tokenizer_path, "r", encoding="utf-8") as f:
         tokenizer_json = json.load(f)
@@ -155,6 +159,8 @@ def tokenizer_rank_scores(
     rank_table: dict[str, int], tokens: list[str]
 ) -> dict[str, float]:
     """Assign pseudo-scores to tokens based on merge ranks."""
+    print("[Tokenizer] Generating merge-rank scores.")
+
     scores = {}
     for token in tokens:
         rank = rank_table.get(token)
