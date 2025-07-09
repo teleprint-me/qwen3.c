@@ -121,8 +121,9 @@ typedef struct ForwardState {
     float* k_cache; // Cached keys (n_layers, seq_len, kv_dim)
     float* v_cache; // Cached values (n_layers, seq_len, kv_dim)
 
-    Q8Tensor xq; // quantized x (dim,)
-    Q8Tensor hq; // quantized mlp_in (hidden_dim,)
+    // Quantized buffers
+    Q8Tensor qx; // Quantized input to attention (dim)
+    Q8Tensor qh; // Quantized input to FFN (hidden_dim)
 } ForwardState;
 
 typedef struct Transformer {
@@ -142,8 +143,8 @@ void malloc_run_state(ForwardState* s, Params *p) {
     s->x_rms_norm = calloc(all_heads_dim, sizeof(float));
     s->mlp_in = calloc(p->hidden_dim, sizeof(float));
     s->mlp_gate = calloc(p->hidden_dim, sizeof(float));
-    s->xq = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
-    s->hq = (Q8Tensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
+    s->qx = (Q8Tensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
+    s->qh = (Q8Tensor) { .q = calloc(p->hidden_dim, sizeof(int8_t)), .s = calloc(p->hidden_dim / GS, sizeof(float)) };
     s->q = calloc(all_heads_dim, sizeof(float));
     s->scores = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
@@ -164,10 +165,10 @@ void free_run_state(ForwardState* s) {
     free(s->x_rms_norm);
     free(s->mlp_in);
     free(s->mlp_gate);
-    free(s->xq.q);
-    free(s->xq.s);
-    free(s->hq.q);
-    free(s->hq.s);
+    free(s->qx.q);
+    free(s->qx.s);
+    free(s->qh.q);
+    free(s->qh.s);
     free(s->q);
     free(s->scores);
     free(s->logits);
@@ -502,12 +503,12 @@ float *forward(Transformer *transformer, int token, int pos) {
         rmsnorm(s->x_rms_norm, x, w->att_rms_norm + l*dim, dim);
 
         // Quantize for matmul efficiency.
-        quantize(&s->xq, s->x_rms_norm, dim);
+        quantize(&s->qx, s->x_rms_norm, dim);
 
         // Compute Q, K, V for this timestep.
-        matmul(s->q, &s->xq, w->wq + l, dim, all_heads_dim);
-        matmul(s->k, &s->xq, w->wk + l, dim, kv_dim);
-        matmul(s->v, &s->xq, w->wv + l, dim, kv_dim);
+        matmul(s->q, &s->qx, w->wq + l, dim, all_heads_dim);
+        matmul(s->k, &s->qx, w->wk + l, dim, kv_dim);
+        matmul(s->v, &s->qx, w->wv + l, dim, kv_dim);
 
         float *gq = w->q_rms_norm + l * p->head_dim;   // 128 floats
         float *gk = w->k_rms_norm + l * p->head_dim;   // 128 floats
@@ -538,8 +539,8 @@ float *forward(Transformer *transformer, int token, int pos) {
         attention(p, s, l, pos);
 
         // final matmul to get the output of the attention
-        quantize(&s->xq, s->x_rms_norm, all_heads_dim);
-        matmul(s->x_rms_norm, &s->xq, w->wo + l, all_heads_dim, dim);
+        quantize(&s->qx, s->x_rms_norm, all_heads_dim);
+        matmul(s->x_rms_norm, &s->qx, w->wo + l, all_heads_dim, dim);
 
         // residual connection back into x
         for (int i = 0; i < dim; i++)
@@ -550,16 +551,16 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        quantize(&s->xq, s->x_rms_norm, dim);
-        matmul(s->mlp_in, &s->xq, w->w1 + l, dim, hidden_dim);
-        matmul(s->mlp_gate, &s->xq, w->w3 + l, dim, hidden_dim);
+        quantize(&s->qx, s->x_rms_norm, dim);
+        matmul(s->mlp_in, &s->qx, w->w1 + l, dim, hidden_dim);
+        matmul(s->mlp_gate, &s->qx, w->w3 + l, dim, hidden_dim);
 
         // SwiGLU non-linearity
         swish(s, hidden_dim);
 
         // final matmul to get the output of the ffn
-        quantize(&s->hq, s->mlp_in, hidden_dim);
-        matmul(s->x_rms_norm, &s->hq, w->w2 + l, hidden_dim, dim);
+        quantize(&s->qh, s->mlp_in, hidden_dim);
+        matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, dim);
 
         // residual connection
         for (int i = 0; i < dim; i++)
@@ -570,8 +571,8 @@ float *forward(Transformer *transformer, int token, int pos) {
     rmsnorm(x, x, w->out_rms_norm, dim);
 
     // classifier into logits
-    quantize(&s->xq, x, dim);
-    matmul(s->logits, &s->xq, w->cls, dim, p->vocab_size);
+    quantize(&s->qx, x, dim);
+    matmul(s->logits, &s->qx, w->cls, dim, p->vocab_size);
     return s->logits;
 }
 
