@@ -98,25 +98,6 @@ def model_load(params: ModelArgs, state: dict[str, Tensor]) -> Transformer:
 
 
 #
-# Serialize weights
-#
-
-
-def serialize_fp32(buffer: BufferedWriter, w: Tensor) -> None:
-    """writes one fp32 tensor to file that is open in wb mode"""
-    d = w.detach().cpu().view(-1).to(torch.float32).numpy()
-    b = struct.pack(f"{len(d)}f", *d)
-    buffer.write(b)
-
-
-def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
-    """writes one int8 tensor to file that is open in wb mode"""
-    d = w.detach().cpu().view(-1).numpy().astype(np.int8)
-    b = struct.pack(f"{len(d)}b", *d)
-    buffer.write(b)
-
-
-#
 # Quantize weights
 #
 
@@ -162,7 +143,33 @@ def quantize_q8_0(tensor: Tensor, group_size: int) -> Q8Tensor:
     return Q8Tensor(quant=quant, scale=scale, error=error)
 
 
-def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: int) -> None:
+#
+# Serialize weights
+#
+
+
+def serialize_fp32(buffer: BufferedWriter, w: Tensor) -> None:
+    """writes one fp32 tensor to file that is open in wb mode"""
+    d = w.detach().cpu().view(-1).to(torch.float32).numpy()
+    b = struct.pack(f"{len(d)}f", *d)
+    buffer.write(b)
+
+
+def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
+    """writes one int8 tensor to file that is open in wb mode"""
+    d = w.detach().cpu().view(-1).numpy().astype(np.int8)
+    b = struct.pack(f"{len(d)}b", *d)
+    buffer.write(b)
+
+
+#
+# PyTorch weight conversion
+#
+
+
+def write_q8_weights(
+    buffer: BufferedWriter, weights: list[Tensor], group_size: int
+) -> None:
     """
     Quantizes and serializes a list of weights to Q8_0 format.
 
@@ -189,11 +196,6 @@ def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: 
         print(f"max quantization group error across all weights: {errors[0][0]:.8f}")
 
 
-#
-# PyTorch weight conversion
-#
-
-
 def model_write(model: Transformer, output_file: str, group_size: int = 64) -> None:
     """
     Export the model weights in Q8_0 into .bin file to be read from C.
@@ -202,8 +204,6 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     - all other tensors (the rmsnorm params) are kept and exported in fp32
     - quantization is done in groups of group_size to reduce the effects of any outliers
     """
-    version = 1
-
     # let's first do some validation for this export type
     while model.params.dim % group_size != 0:
         group_size //= 2
@@ -233,7 +233,7 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     # 1) write magic, which will be uint32 of "qwen" in ASCII
     out_file.write(struct.pack("I", 0x7177656E))
     # 2) write version, which will be int
-    out_file.write(struct.pack("i", version))
+    out_file.write(struct.pack("i", 1))
     # 3) write the params, which will be 7 ints
     p = model.params
     hidden_dim = model.layers[0].feed_forward.w1.weight.shape[0]
