@@ -235,17 +235,17 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
     print("[Tokenizer] Serializing model tokenizer.")
     with open(output_file + ".tokenizer", "wb") as out_f:
         # Binary header
-        out_f.write(struct.pack("<i", 0x71746B6E))  # (qtkn) 4 bytes
-        out_f.write(struct.pack("<i", 1))  # 4 bytes
-        out_f.write(struct.pack("<i", vocab.max_token_length))
-        out_f.write(struct.pack("<i", vocab.bos_id))
-        out_f.write(struct.pack("<i", vocab.eos_id))
+        out_f.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
+        out_f.write(struct.pack("i", 1))  # 4 bytes
+        out_f.write(struct.pack("i", vocab.max_token_length))
+        out_f.write(struct.pack("i", vocab.bos_id))
+        out_f.write(struct.pack("i", vocab.eos_id))
 
         # Tokens will be cast to uint8_t on C-side
         for token in vocab.tokens_by_id:
             token_bytes = unicode_to_bytes(token)
             out_f.write(struct.pack("f", vocab.scores[token]))  # float32 score
-            out_f.write(struct.pack("<i", len(token_bytes)))  # int32 length
+            out_f.write(struct.pack("i", len(token_bytes)))  # int32 length
             out_f.write(token_bytes)  # UTF-8 bytes
 
     print(f"[Tokenizer] Wrote tokenizer model to {output_file}.tokenizer")
