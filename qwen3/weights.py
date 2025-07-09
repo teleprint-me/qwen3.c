@@ -167,52 +167,106 @@ def serialize_int8(buffer: BufferedWriter, w: Tensor) -> None:
 #
 
 
-def model_adjust_group_size(model: Transformer, group_size: int) -> int:
-    while model.params.dim % group_size != 0:
-        group_size //= 2
+@dataclass
+class ExportGroup:
+    size: int
+    model: Transformer
+    weights: list[Tensor]
+    shared_classifier: bool
+    buffer: BufferedWriter
+
+
+def export_group_adjust_size(group: ExportGroup) -> int:
+    while group.model.params.dim % group.size != 0:
+        group.size //= 2
         print(
-            f"[GroupSize] Warning: Reducing group size to {group_size} to fit hidden_dim."
+            f"[GroupSize] Warning: Reducing group size to {group.size} to fit hidden_dim."
         )
-    return group_size
+    return group.size
 
 
-def model_export_weights(model: Transformer) -> list[Tensor]:
+def export_group_weights(group: ExportGroup) -> list[Tensor]:
     """
     Return weights in the fixed serialization order expected by the C-side.
     Does not include the output projection (classifier).
     """
     return [
-        model.tok_embeddings.weight,
-        *[layer.attention.wq.weight for layer in model.layers],
-        *[layer.attention.wk.weight for layer in model.layers],
-        *[layer.attention.wv.weight for layer in model.layers],
-        *[layer.attention.wo.weight for layer in model.layers],
-        *[layer.feed_forward.w1.weight for layer in model.layers],
-        *[layer.feed_forward.w2.weight for layer in model.layers],
-        *[layer.feed_forward.w3.weight for layer in model.layers],
+        group.model.tok_embeddings.weight,
+        *[layer.attention.wq.weight for layer in group.model.layers],
+        *[layer.attention.wk.weight for layer in group.model.layers],
+        *[layer.attention.wv.weight for layer in group.model.layers],
+        *[layer.attention.wo.weight for layer in group.model.layers],
+        *[layer.feed_forward.w1.weight for layer in group.model.layers],
+        *[layer.feed_forward.w2.weight for layer in group.model.layers],
+        *[layer.feed_forward.w3.weight for layer in group.model.layers],
     ]
 
 
-def model_weights_are_tied(model: Transformer, weights: list[Tensor]) -> bool:
+def export_group_weights_are_tied(group: ExportGroup) -> bool:
     """
     Appends the output projection weight if it's not tied to embeddings.
     Returns True if tied, False otherwise.
     """
-    shared = torch.equal(model.tok_embeddings.weight, model.output.weight)
+    shared = torch.equal(group.model.tok_embeddings.weight, group.model.output.weight)
     if not shared:
-        weights.append(model.output.weight)
+        group.weights.append(group.model.output.weight)
     return shared
 
 
-def model_validate_weights(weights: list[Tensor], group_size: int) -> None:
-    for i, w in enumerate(weights):
-        assert w.numel() % group_size == 0, (
+def export_group_validate_weights(group: ExportGroup) -> None:
+    for i, w in enumerate(group.weights):
+        assert w.numel() % group.size == 0, (
             f"weight {i} with shape {tuple(w.shape)} has {w.numel()} elements, "
-            f"not divisible by group_size {group_size}"
+            f"not divisible by group_size {group.size}"
         )
 
 
-def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: int) -> None:
+def export_group_write_header(group: ExportGroup) -> None:
+    """
+    Writes a 256-byte model header to the given binary buffer.
+
+    Header structure (byte offsets):
+      - [  0] uint32 magic number ("qwen" = 0x7177656E)
+      - [  4] int32  version (currently 1)
+      - [  8] int32  dim
+      - [ 12] int32  hidden_dim
+      - [ 16] int32  n_layers
+      - [ 20] int32  n_heads
+      - [ 24] int32  n_kv_heads
+      - [ 28] int32  vocab_size
+      - [ 32] int32  max_seq_len
+      - [ 36] int32  head_dim
+      - [ 40] int32  shared_classifier (1 if tied, else 0)
+      - [ 44] int32  group_size
+      - [ 48-255] padding (zeros)
+    """
+    group.buffer.write(struct.pack("I", 0x7177656E))  # magic: "qwen"
+    group.buffer.write(struct.pack("i", 1))  # version
+
+    p = group.model.params
+    hidden_dim = group.model.layers[0].feed_forward.w1.weight.shape[0]
+    n_kv_heads = p.n_heads if p.n_kv_heads is None else p.n_kv_heads
+
+    fields = (
+        p.dim,
+        hidden_dim,
+        p.n_layers,
+        p.n_heads,
+        n_kv_heads,
+        p.vocab_size,
+        p.max_seq_len,
+        p.head_dim,
+        int(group.shared_classifier),
+        group.size,
+    )
+    group.buffer.write(struct.pack("iiiiiiiiii", *fields))
+
+    pad = 256 - group.buffer.tell()
+    assert pad >= 0, f"Header overflow: wrote more than 256 bytes!"
+    group.buffer.write(b"\0" * pad)
+
+
+def group_export_write_q8_weights(group: ExportGroup) -> None:
     """
     Quantizes and serializes a list of weights to Q8_0 format.
 
@@ -223,14 +277,14 @@ def write_q8_weights(buffer: BufferedWriter, weights: list[Tensor], group_size: 
     """
     errors = []
 
-    for i, tensor in enumerate(weights):
-        q8 = quantize_q8_0(tensor, group_size)
-        serialize_int8(buffer, q8.quant)
-        serialize_fp32(buffer, q8.scale)
+    for i, tensor in enumerate(group.weights):
+        q8 = quantize_q8_0(tensor, group.size)
+        serialize_int8(group.buffer, q8.quant)
+        serialize_fp32(group.buffer, q8.scale)
         errors.append((q8.error, tensor.shape))
 
         print(
-            f"{i+1}/{len(weights)} quantized {tuple(tensor.shape)} "
+            f"{i+1}/{len(group.weights)} quantized {tuple(tensor.shape)} "
             f"to Q8_0 with max error {q8.error:.8f}"
         )
 
@@ -247,53 +301,27 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
     - all other tensors (the rmsnorm params) are kept and exported in fp32
     - quantization is done in groups of group_size to reduce the effects of any outliers
     """
-    group_size = model_adjust_group_size(model, group_size)
-    weights = model_export_weights(model)
-    shared_classifier = model_weights_are_tied(model, weights)
-    model_validate_weights(weights, group_size)
+    group = ExportGroup(model=model, size=group_size)
 
-    # write
-    out_file = open(output_file, "wb")
-    # first write out the header. the header will be 256 bytes
-    # 1) write magic, which will be uint32 of "qwen" in ASCII
-    out_file.write(struct.pack("I", 0x7177656E))
-    # 2) write version, which will be int
-    out_file.write(struct.pack("i", 1))
-    # 3) write the params, which will be 7 ints
-    p = model.params
-    hidden_dim = model.layers[0].feed_forward.w1.weight.shape[0]
-    n_kv_heads = p.n_heads if p.n_kv_heads is None else p.n_kv_heads
-    header = struct.pack(
-        "iiiiiiiiii",
-        p.dim,
-        hidden_dim,
-        p.n_layers,
-        p.n_heads,
-        n_kv_heads,
-        p.vocab_size,
-        p.max_seq_len,
-        p.head_dim,
-        int(shared_classifier),
-        group_size,
-    )
-    out_file.write(header)
+    group.size = export_group_adjust_size(group)
+    group.weights = export_group_weights(group)
+    group.shared_classifier = export_group_weights_are_tied(group)
+    export_group_validate_weights(group)
 
-    pad = 256 - out_file.tell()  # pad rest with zeros; tell returns current pos
-    assert pad >= 0
-    out_file.write(b"\0" * pad)
-    # now that the header is done, let's write out the model
+    group.buffer = open(output_file, "wb")
+    export_group_write_header(group)
 
     # first let's write out all the params that we are keeping in fp32: the norms
     for layer in model.layers:  # attention norms
-        serialize_fp32(out_file, layer.attention_norm.weight)
+        serialize_fp32(group.buffer, layer.attention_norm.weight)
     for layer in model.layers:  # MLP norms
-        serialize_fp32(out_file, layer.ffn_norm.weight)
-    serialize_fp32(out_file, model.norm.weight)  # final pre-classifier norm
+        serialize_fp32(group.buffer, layer.ffn_norm.weight)
+    serialize_fp32(group.buffer, model.norm.weight)  # final pre-classifier norm
 
     # write out the QK-LayerNorm weights (Qwen3)
     for layer in model.layers:
         serialize_fp32(
-            out_file,
+            group.buffer,
             (
                 layer.attention.lq.weight
                 if layer.attention.lq.weight is not None
@@ -302,7 +330,7 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
         )
     for layer in model.layers:
         serialize_fp32(
-            out_file,
+            group.buffer,
             (
                 layer.attention.lk.weight
                 if layer.attention.lk.weight is not None
@@ -310,10 +338,10 @@ def model_write(model: Transformer, output_file: str, group_size: int = 64) -> N
             ),
         )
 
-    write_q8_weights(out_file, weights, group_size)
+    group_export_write_q8_weights(group)
 
     # write to binary file
-    out_file.close()
+    group.buffer.close()
     print(f"Written model checkpoint to {output_file}")
 
 
