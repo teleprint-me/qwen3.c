@@ -4,19 +4,15 @@
 """
 
 import json
-import math
 import os
 import struct
-from pathlib import Path
 from io import BufferedWriter
 
 import numpy as np
 import torch
 from torch import Tensor
-from jinja2 import Template
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from tokenizers import Tokenizer
+from transformers import AutoModelForCausalLM
 from qwen3.model import ModelArgs, Transformer
 
 # -----------------------------------------------------------------------------
