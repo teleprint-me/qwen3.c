@@ -184,6 +184,7 @@ def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
     eos_id = config.get("eos_token_id", 151645)
     return bos_id, eos_id
 
+
 def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[str, int]:
     """Construct a merge pair to rank index mapping."""
     print("[Tokenizer] Generating merge-rank table.")
