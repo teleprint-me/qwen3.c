@@ -31,7 +31,7 @@ int main(int argc, const char* argv[]) {
         // Encode input
         int ids[MAX_TOKENS];
         int n_ids = 0;
-        encode(tokenizer, (char*)text, ids, &n_ids);
+        encode(tokenizer, (char*) text, ids, &n_ids);
 
         // Print token IDs and corresponding text
         printf("Tokens: ");

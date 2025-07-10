@@ -18,8 +18,8 @@
  */
 
 typedef struct Template {
-    char* data;     // dynamically allocated UTF-8 string
-    ssize_t size;   // number of bytes read (excluding null terminator)
+    char* data; // dynamically allocated UTF-8 string
+    ssize_t size; // number of bytes read (excluding null terminator)
 } Template;
 
 Template* template_create(const char* in_file, int enable_system, int enable_thinking);
@@ -33,14 +33,14 @@ void template_free(Template* template);
  */
 
 typedef struct Token {
-    char* entry;     // null-terminated UTF-8 token
-    float score;    // merge rank or base token marker
+    char* entry; // null-terminated UTF-8 token
+    float score; // merge rank or base token marker
 } Token;
 
 typedef struct Tokenizer {
     Token* tokens; // token → string + score
-    Template* prompt;    // user-only prompt
-    Template* system;    // system + user prompt
+    Template* prompt; // user-only prompt
+    Template* system; // system + user prompt
     int bos_id;
     int eos_id;
     int vocab_size;
@@ -57,7 +57,7 @@ void tokenizer_free(Tokenizer* tokenizer);
  * @{
  */
 
-char* tokenizer_id_to_token(Tokenizer *t, int id);
+char* tokenizer_id_to_token(Tokenizer* t, int id);
 int tokenizer_token_to_id(Tokenizer* t, const char* token);
 
 /** @} */

@@ -24,7 +24,9 @@ Template* template_create(const char* in_file, int enable_system, int enable_thi
     // Construct full file path
     size_t len = strlen(in_file) + strlen(suffix);
     char* file_path = calloc(len + 1, 1);
-    if (!file_path) return NULL;
+    if (!file_path) {
+        return NULL;
+    }
 
     memcpy(file_path, in_file, strlen(in_file));
     memcpy(file_path + strlen(in_file), suffix, strlen(suffix));
@@ -32,14 +34,19 @@ Template* template_create(const char* in_file, int enable_system, int enable_thi
 
     FILE* file = fopen(file_path, "rb");
     free(file_path); // cleanup here is safe
-    if (!file) return NULL;
+    if (!file) {
+        return NULL;
+    }
 
     fseek(file, 0, SEEK_END);
     ssize_t size = ftell(file);
     rewind(file);
 
     Template* template = calloc(1, sizeof(Template));
-    if (!template) { fclose(file); return NULL; }
+    if (!template) {
+        fclose(file);
+        return NULL;
+    }
 
     template->size = size;
     template->data = calloc(size + 1, 1); // null-terminate for convenience
@@ -55,7 +62,9 @@ Template* template_create(const char* in_file, int enable_system, int enable_thi
 }
 
 void template_free(Template* t) {
-    if (!t) return;
+    if (!t) {
+        return;
+    }
     free(t->data);
     free(t);
 }
@@ -72,7 +81,9 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     const char* suffix = ".tokenizer";
     size_t len = strlen(in_file) + strlen(suffix);
     char* file_path = calloc(len + 1, 1);
-    if (!file_path) return NULL;
+    if (!file_path) {
+        return NULL;
+    }
 
     memcpy(file_path, in_file, strlen(in_file));
     memcpy(file_path + strlen(in_file), suffix, strlen(suffix));
@@ -120,11 +131,15 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
         float score;
         int length;
 
-        if (fread(&score, sizeof(float), 1, file) != 1) break;
-        if (fread(&length, sizeof(int), 1, file) != 1) break;
+        if (fread(&score, sizeof(float), 1, file) != 1) {
+            break;
+        }
+        if (fread(&length, sizeof(int), 1, file) != 1) {
+            break;
+        }
 
         char* buffer = calloc(length + 1, 1);
-        if (!buffer || fread(buffer, 1, length, file) != (size_t)length) {
+        if (!buffer || fread(buffer, 1, length, file) != (size_t) length) {
             fprintf(stderr, "[Tokenizer] Token read error at index %d\n", i);
             break;
         }
@@ -144,7 +159,9 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
 }
 
 void tokenizer_free(Tokenizer* t) {
-    if (!t) return;
+    if (!t) {
+        return;
+    }
     for (int i = 0; i < t->vocab_size; i++) {
         free(t->tokens[i].entry);
     }
@@ -161,13 +178,17 @@ void tokenizer_free(Tokenizer* t) {
  * @{
  */
 
-char* tokenizer_id_to_token(Tokenizer *t, int id) {
-    if (!t || id < 0 || id >= t->vocab_size) return NULL;
+char* tokenizer_id_to_token(Tokenizer* t, int id) {
+    if (!t || id < 0 || id >= t->vocab_size) {
+        return NULL;
+    }
     return t->tokens[id].entry;
 }
 
 int tokenizer_token_to_id(Tokenizer* t, const char* token) {
-    if (!t || !t->tokens || !token) return -1;
+    if (!t || !t->tokens || !token) {
+        return -1;
+    }
 
     // find a match for str in vocab, return its index or -1 if not found
     for (int i = 0; i < t->vocab_size; i++) {
@@ -206,8 +227,8 @@ void encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
         buffer[1] = '\0';
 
         // special ids begin with < and end with >. If we find a substring beginning with <
-        // and ending with > and there's a token in the vocab for it, use that instead of parsing into
-        // shorter ids
+        // and ending with > and there's a token in the vocab for it, use that instead of parsing
+        // into shorter ids
         if (*byte == '<') {
             int end_of_token_pos = -1;
             found_special_token = 0;
@@ -224,15 +245,16 @@ void encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
 
                 id = tokenizer_token_to_id(t, special_token);
                 if (id != -1) {
-                byte += end_of_token_pos;
-                found_special_token = 1;
+                    byte += end_of_token_pos;
+                    found_special_token = 1;
                 }
             }
         }
 
         // not a special token, just look up the single character
-        if (!found_special_token)
+        if (!found_special_token) {
             id = tokenizer_token_to_id(t, buffer);
+        }
 
         if (id != -1) {
             // we found this codepoint in vocab, add it as a token
@@ -262,14 +284,16 @@ void encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
             }
         }
 
-        if (best_idx == -1)
+        if (best_idx == -1) {
             break; // we couldn't find any more pairs to merge, so we're done
+        }
 
         // merge the consecutive pair (best_idx, best_idx+1) into new token best_id
         ids[best_idx] = best_id;
         // delete token at position best_idx+1, shift the entire sequence back 1
-        for (int i = best_idx + 1; i < (*n_ids - 1); i++)
+        for (int i = best_idx + 1; i < (*n_ids - 1); i++) {
             ids[i] = ids[i + 1];
+        }
 
         (*n_ids)--; // token length decreased
     }
