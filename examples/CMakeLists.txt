@@ -1,6 +1,7 @@
 # examples
 set(EXAMPLES
     "weights"
+    "tokenizer"
     "qwen"
 )
 
