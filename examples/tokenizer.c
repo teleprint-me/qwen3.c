@@ -15,12 +15,13 @@ int main(int argc, const char* argv[]) {
         fprintf(stderr, "%s <tokenizer-model> <text>\n", *argv);
         return 1;
     }
-    const char* model_path = argv[1];
 
+    const char* model_path = argv[1];
     Tokenizer* tokenizer = tokenizer_create(model_path, VOCAB_SIZE, 0);
 
     for (int i = 2; i < argc; i++) {
         int id = tokenizer_token_to_id(tokenizer, argv[i]);
+        printf("[Tokenizer] id=%d\n", id);
         char* token = tokenizer_id_to_token(tokenizer, id);
         printf("[Tokenizer] id=%d, token=%s\n", id, token);
     }

@@ -162,6 +162,7 @@ void tokenizer_free(Tokenizer* t) {
  */
 
 char* tokenizer_id_to_token(Tokenizer *t, int id) {
+    if (!t || id < 0 || id >= t->vocab_size) return NULL;
     return t->tokens[id].entry;
 }
 
