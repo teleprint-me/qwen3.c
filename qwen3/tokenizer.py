@@ -221,6 +221,7 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
     rank_table = tokenizer_rank_table(tokenizer)
     rank_scores = tokenizer_rank_scores(rank_table, tokens_by_id)
 
+    print(f"[Tokenizer] Vocab has {len(tokens_by_id)} tokens with max len of {max_token_length}")
     return Vocab(
         max_token_length=max_token_length,
         bos_id=bos_id,
