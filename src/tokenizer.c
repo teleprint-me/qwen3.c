@@ -206,8 +206,8 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
  * @{
  */
 
-static int tokenizer_find_special_token(char* start, char* out, int maxlen) {
-    for (int k = 0; start[k] && k < maxlen; ++k) {
+static int tokenizer_find_special_token(Tokenizer* t, char* start, char* out) {
+    for (int k = 0; start[k] && k < t->max_token_length; ++k) {
         if (start[k] == '>') {
             int n_bytes = k + 1; // number of bytes consumed
             strncpy(out, start, n_bytes);
@@ -216,6 +216,46 @@ static int tokenizer_find_special_token(char* start, char* out, int maxlen) {
         }
     }
     return 0;
+}
+
+static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
+    int n_ids = 0;
+    char* bytes = start;
+
+    while (*bytes) {
+        int id = -1;
+        char token[t->max_token_length];
+        token[0] = '\0';
+
+        if (*bytes == '<') {
+            int consumed = tokenizer_find_special_token(t, bytes, token);
+            if (consumed > 0) {
+                id = tokenizer_token_to_id(t, token);
+                if (id != -1) {
+                    bytes += consumed;
+                }
+            }
+        }
+
+        if (id == -1) {
+            token[0] = *bytes++;
+            token[1] = '\0';
+            id = tokenizer_token_to_id(t, token);
+        }
+
+        if (id != -1) {
+            out[(n_ids)++] = id;
+        } else {
+            fprintf(
+                stderr,
+                "Warning: Unknown character `%c` (codepoint %d)\n",
+                token[0],
+                token[0]
+            );
+        }
+    }
+
+    return n_ids;
 }
 
 static int tokenizer_find_best_merge(
@@ -253,40 +293,7 @@ static int tokenizer_find_best_merge(
 
 void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
     // Initial tokenization
-    *n_ids = 0;
-    char* bytes = text;
-    while (*bytes) {
-        int id = -1;
-        char token_buf[t->max_token_length];
-        token_buf[0] = '\0';
-
-        if (*bytes == '<') {
-            int consumed = tokenizer_find_special_token(bytes, token_buf, t->max_token_length);
-            if (consumed > 0) {
-                id = tokenizer_token_to_id(t, token_buf);
-                if (id != -1) {
-                    bytes += consumed;
-                }
-            }
-        }
-
-        if (id == -1) {
-            token_buf[0] = *bytes++;
-            token_buf[1] = '\0';
-            id = tokenizer_token_to_id(t, token_buf);
-        }
-
-        if (id != -1) {
-            ids[(*n_ids)++] = id;
-        } else {
-            fprintf(
-                stderr,
-                "Warning: Unknown character `%c` (codepoint %d)\n",
-                token_buf[0],
-                token_buf[0]
-            );
-        }
-    }
+    *n_ids = tokenizer_find_token_ids(t, text, ids);
 
     // BPE merge loop
     char* merge_buf = malloc(t->max_token_length * 2 + 1);
