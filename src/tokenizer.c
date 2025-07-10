@@ -291,15 +291,11 @@ static int tokenizer_find_best_merge(
     return 0; // no match found
 }
 
-void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
-    // Initial tokenization
-    *n_ids = tokenizer_find_token_ids(t, text, ids);
-
-    // BPE merge loop
-    char* merge_buf = malloc(t->max_token_length * 2 + 1);
+void tokenizer_merge_token_ids(Tokenizer* t, int* ids, int* n_ids) {
+    char* buffer = malloc(t->max_token_length * 2 + 1);
     while (1) {
         int best_id, best_idx;
-        if (!tokenizer_find_best_merge(t, ids, *n_ids, merge_buf, &best_id, &best_idx)) {
+        if (!tokenizer_find_best_merge(t, ids, *n_ids, buffer, &best_id, &best_idx)) {
             break;
         }
 
@@ -307,7 +303,13 @@ void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
         memmove(&ids[best_idx + 1], &ids[best_idx + 2], (*n_ids - best_idx - 2) * sizeof(int));
         (*n_ids)--;
     }
-    free(merge_buf);
+    free(buffer);
+}
+
+void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
+    // Initial tokenization
+    *n_ids = tokenizer_find_token_ids(t, text, ids);
+    tokenizer_merge_token_ids(t, ids, n_ids);
 }
 
 /** @} */
