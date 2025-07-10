@@ -1,8 +1,4 @@
-## qwen3.c
-
-<p align="center">
-  <img src="assets/qwen3_c.jpg" width="300" height="300" alt="Cute Llama">
-</p>
+# qwen3.c
 
 **Run inference for frontier models based on the Qwen3 architecture, like Qwen3-4B or DeepSeek-R1-0528-Qwen3-8B, on your local Linux/macOS/Windows machine. No complicated configuration
 required, just follow the steps below and enjoy.**
