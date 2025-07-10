@@ -1264,7 +1264,7 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
     int pos = 0;     // position in the sequence
 
-    while (pos < transformer->config.seq_len) {
+    while (pos < transformer->params.seq_len) {
         // forward the transformer to get logits for the next token
         float *logits = forward(transformer, token, pos);
 
@@ -1321,7 +1321,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char
 
     while (1) {
         // if context window is exceeded, clear it
-        if (pos >= transformer->config.seq_len) {
+        if (pos >= transformer->params.seq_len) {
             printf("\n(context window full, clearing)\n");
             user_turn = 1;
             pos = 0;
@@ -1441,25 +1441,45 @@ int main(int argc, char *argv[]) {
     if (topp < 0.0f || 1.0f < topp) topp = 0.9f;
 
     // build the Transformer via the model .bin file
-    Transformer transformer;
-    build_transformer(&transformer, checkpoint_path, ctx_length);
+    Transformer* transformer = transformer_create(checkpoint_path, ctx_length);
 
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer tokenizer;
-    build_tokenizer(&tokenizer, checkpoint_path, transformer.config.vocab_size, enable_thinking);
+    build_tokenizer(&tokenizer, checkpoint_path, transformer->params.vocab_size, enable_thinking);
 
     // build the Sampler
     Sampler sampler;
-    build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
+    build_sampler(&sampler, transformer->params.vocab_size, temperature, topp, rng_seed);
 
-    if (!prompt)
-        printf("hidden_size=%d, intermediate_size=%d, num_hidden_layers=%d, num_attention_heads=%d, num_kv_heads=%d, head_dim=%d, ctx_length=%d, vocab_size=%d, shared_classifier=%d, quantization_block_size=%d\n", transformer.config.dim, transformer.config.hidden_dim, transformer.config.n_layers, transformer.config.n_heads, transformer.config.n_kv_heads, transformer.config.head_dim, transformer.config.seq_len, transformer.config.vocab_size, transformer.config.shared_classifier, transformer.config.group_size);
+    if (!prompt) {
+        printf(
+            "hidden_size=%d, "
+            "intermediate_size=%d, "
+            "num_hidden_layers=%d, "
+            "num_attention_heads=%d, "
+            "num_kv_heads=%d, "
+            "head_dim=%d, "
+            "ctx_length=%d, "
+            "vocab_size=%d, "
+            "shared_classifier=%d, "
+            "quantization_block_size=%d\n",
+            transformer->params.dim,
+            transformer->params.hidden_dim,
+            transformer->params.n_layers,
+            transformer->params.n_heads,
+            transformer->params.n_kv_heads,
+            transformer->params.head_dim,
+            transformer->params.seq_len,
+            transformer->params.vocab_size,
+            transformer->params.shared_classifier,
+            transformer->params.group_size);
+    }
 
     // run!
     if (strcmp(mode, "generate") == 0) {
-        generate(&transformer, &tokenizer, &sampler, prompt);
+        generate(transformer, &tokenizer, &sampler, prompt);
     } else if (strcmp(mode, "chat") == 0) {
-        chat(&transformer, &tokenizer, &sampler, prompt, system_prompt);
+        chat(transformer, &tokenizer, &sampler, prompt, system_prompt);
     } else {
         fprintf(stderr, "Unknown mode: %s\n", mode);
         error_usage();
@@ -1468,6 +1488,6 @@ int main(int argc, char *argv[]) {
     // memory and file handles cleanup
     free_sampler(&sampler);
     free_tokenizer(&tokenizer);
-    free_transformer(&transformer);
+    transformer_free(transformer);
     return 0;
 }
