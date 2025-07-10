@@ -57,7 +57,11 @@ void tokenizer_free(Tokenizer* tokenizer);
  * @{
  */
 
+// This is O(1) constant time and N input space.
 char* tokenizer_id_to_token(Tokenizer* t, int id);
+
+// This is O(V) to O(N log V) time and N input space.
+// String comparison is the bottle-neck here.
 int tokenizer_token_to_id(Tokenizer* t, const char* token);
 
 /** @} */
@@ -67,7 +71,18 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token);
  * @{
  */
 
-void encode(Tokenizer* t, char* text, int* ids, int* n_ids);
+/**
+ * | Stage            | Worst-Case Time      | Optimized Time (w/ hashmap) | Space Used         |
+ * | ---------------- | -------------------- | --------------------------- | ------------------ |
+ * | First-pass parse | `O(N * V)`           | `O(N * log V)` or `O(N)`    | `O(N)` for `ids[]` |
+ * | BPE Merge Loop   | `O(T^2 * V)`         | `O(T^2)` or `O(T log T)`    | `O(T)`             |
+ * | **Overall**      | `O(N * V + T^2 * V)` | `O(N + T log T)`            | `O(N + L)`         |
+ *
+ * Greedy BPE encoder, takes about O(N + T) in best case scenario.
+ * The only way to speed this up is to use a hash table or a trie.
+ * A hash-table and trie are omitted to retain some level of simplicity.
+ */
+void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids);
 
 /** @} */
 
