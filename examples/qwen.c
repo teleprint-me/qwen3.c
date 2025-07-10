@@ -306,7 +306,7 @@ bool model_read_params(Transformer* t, int override_seq_len) {
  *
  * This function assumes `stream` points to a contiguous memory-mapped model checkpoint.
  * All fp32 weights (e.g. RMSNorm parameters) are read first, then the quantized tensors
- * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream
+ * are constructed using `q8_tensor_map`, which allocates memory internally and adjusts the stream
  * pointer.
  *
  * @param t        Pointer to Transformer model.
@@ -343,12 +343,12 @@ bool model_read_weights(Transformer* t) {
 
     /**
      * Advance stream to beginning of quantized weights.
-     * q8_tensor allocates memory for Q8Tensor and updates the stream pointer.
+     * q8_tensor_map allocates memory for Q8Tensor and updates the stream pointer.
      */
     t->model = (void*) weights;
 
     // Token embeddings (quantized + dequantized)
-    w->qe = q8_tensor(&t->model, 1, p->vocab_size * p->dim); // allocates internally
+    w->qe = q8_tensor_map(&t->model, 1, p->vocab_size * p->dim); // allocates internally
     w->fe = calloc(p->vocab_size * p->dim, sizeof(float)); // explicit malloc (must be freed)
     if (!w->fe) {
         return false;
@@ -364,10 +364,10 @@ bool model_read_weights(Transformer* t) {
     const int proj_dim = p->n_heads * p->head_dim;
     const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->wq = q8_tensor(&t->model, p->n_layers, p->dim * proj_dim);
-    w->wk = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
-    w->wv = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
-    w->wo = q8_tensor(&t->model, p->n_layers, proj_dim * p->dim); // [proj, dim] format
+    w->wq = q8_tensor_map(&t->model, p->n_layers, p->dim * proj_dim);
+    w->wk = q8_tensor_map(&t->model, p->n_layers, p->dim * kv_dim);
+    w->wv = q8_tensor_map(&t->model, p->n_layers, p->dim * kv_dim);
+    w->wo = q8_tensor_map(&t->model, p->n_layers, proj_dim * p->dim); // [proj, dim] format
 
     /**
      * Feed-forward weights
@@ -375,16 +375,16 @@ bool model_read_weights(Transformer* t) {
      */
     const int hidden_dim = p->hidden_dim;
 
-    w->w1 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w1(x)
-    w->w2 = q8_tensor(&t->model, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
-    w->w3 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w3(x)
+    w->w1 = q8_tensor_map(&t->model, p->n_layers, p->dim * hidden_dim); // w1(x)
+    w->w2 = q8_tensor_map(&t->model, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
+    w->w3 = q8_tensor_map(&t->model, p->n_layers, p->dim * hidden_dim); // w3(x)
 
     /**
      * Output classifier
      * If shared_classifier is true, reuse token embedding matrix
      * (tied weights). Otherwise, allocate separate output proj_dim.
      */
-    w->cls = p->shared_classifier ? w->qe : q8_tensor(&t->model, 1, p->dim * p->vocab_size);
+    w->cls = p->shared_classifier ? w->qe : q8_tensor_map(&t->model, 1, p->dim * p->vocab_size);
 
     return true;
 }
@@ -619,30 +619,33 @@ void transformer_free(Transformer* t) {
 
 /** @} */
 
-// ----------------------------------------------------------------------------
-// neural net blocks; the dynamics of the Transformer
+/**
+ * @section Forward-pass
+ * @{
+ */
 
-void rmsnorm(float *o, float *x, float *weight, int size) {
+void rmsnorm(float* out, float* x, float* w, int size) {
     // calculate sum of squares
     float sos = 0.0f;
-    #pragma omp parallel for reduction(+:sos)
-    for (int j = 0; j < size; j++) {
-        sos += x[j] * x[j];
+
+#pragma omp parallel for reduction(+ : sos)
+    for (int i = 0; i < size; i++) {
+        sos += x[i] * x[i];
     }
 
     sos = 1.0f / sqrtf((sos / size) + 1e-6f);
 
-    // normalize and scale
-    #pragma omp parallel for
-    for (int j = 0; j < size; j++) {
-        o[j] = weight[j] * (sos * x[j]);
+// normalize and scale
+#pragma omp parallel for
+    for (int i = 0; i < size; i++) {
+        out[i] = w[i] * (sos * x[i]);
     }
 }
 
 /// @todo Cache max_val if last token's softmax is reused (e.g. in KV cache).
 /// @todo Replace expf() with fast_approx_exp() if precision tradeoff is acceptable.
 /// @todo Consider log-sum-exp for log-domain ops.
-void softmax(float *x, int size) {
+void softmax(float* x, int size) {
     // find max value (for numerical stability)
     float max_val = x[0]; // use first element as initial guess
     for (int i = 1; i < size; i++) {
@@ -653,108 +656,57 @@ void softmax(float *x, int size) {
 
     // exponentiate and sum
     float sum = 0.0f;
-    #pragma omp parallel for reduction(+:sum)
+#pragma omp parallel for reduction(+ : sum)
     for (int i = 0; i < size; i++) {
         x[i] = expf(x[i] - max_val);
         sum += x[i];
     }
 
-    // normalize
-    #pragma omp parallel for
+// normalize
+#pragma omp parallel for
     for (int i = 0; i < size; i++) {
         x[i] /= sum;
     }
 }
 
-void matmul(float *xout, Q8Tensor *x, Q8Tensor *w, int n, int d) {
-    // W (d,n) @ x (n,) -> xout (d,)
-    // by far the most amount of time is spent inside this little function
-    // inputs to this function are both quantized
-
-    #pragma omp parallel for
+void matmul(float* out, Q8Tensor* x, Q8Tensor* w, int n, int d) {
+// W (d,n) @ x (n,) -> y (d,)
+// For each output dimension i ∈ [0, d)
+#pragma omp parallel for
     for (int i = 0; i < d; i++) {
         float val = 0;
-        int in = i * n;
+        int off = i * n; // row start offset in flat W.q[]
 
-        // do the matmul in groups of GS
+        // Inner dot product in groups of GS
         for (int j = 0; j <= n - GS; j += GS) {
-            int32_t ival = 0;
-            for (int k = 0; k < GS; k++)
-                ival += x->q[j + k] * w->q[in + j + k];
+            int32_t dot = 0;
+            for (int k = 0; k < GS; k++) {
+                dot += x->q[j + k] * w->q[off + j + k];
+            }
 
-            val += ((float) ival) * w->s[(in + j) / GS] * x->s[j / GS];
+            val += ((float) dot) // Dequantize this group
+                   * w->s[(off + j) / GS] // weight group scale
+                   * x->s[j / GS]; // input group scale
         }
 
-        xout[i] = val;
+        out[i] = val;
     }
 }
 
 /// @todo Add precomputed rotary cache.
-void rotary(float* t, int head_dim, int pos) {
+void rotary(float* x, int head_dim, int pos) {
     int half_dim = head_dim / 2;
 
-    #pragma omp parallel for
+#pragma omp parallel for
     for (int i = 0; i < half_dim; i++) {
-        float angle = pos * powf(1e6f, -(float)i / half_dim);
+        float angle = pos * powf(1e6f, -(float) i / half_dim);
         float cos_a = cosf(angle), sin_a = sinf(angle);
 
-        float real = t[i];
-        float imag = t[i + half_dim];
+        float real = x[i];
+        float imag = x[i + half_dim];
 
-        t[i]            = real * cos_a - imag * sin_a;
-        t[i + half_dim] = real * sin_a + imag * cos_a;
-    }
-}
-
-void attention(Params* p, ForwardState* s, int l, int pos) {
-    int head_dim = p->head_dim;
-    int kv_mul   = p->n_heads / p->n_kv_heads;
-    int kv_dim   = p->n_kv_heads * head_dim;
-    uint64_t loff = (uint64_t) l * p->seq_len * kv_dim;
-
-    for (int h = 0; h < p->n_heads; h++) {
-        float* q   = s->q + h * head_dim;
-        float* scores = s->scores + h * p->seq_len;
-        float* x_rms_norm  = s->x_rms_norm  + h * head_dim;
-
-        // Compute attention scores
-        #pragma omp parallel for
-        for (int t = 0; t <= pos; t++) {
-            float* k = s->k_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
-            float score = 0.0f;
-            for (int i = 0; i < head_dim; i++) {
-                score += q[i] * k[i];
-            }
-
-            scores[t] = score / sqrtf((float)head_dim);
-        }
-
-        // Normalize scores to get attention weights
-        softmax(scores, pos + 1);
-
-        // Initialize output vector for this head
-        memset(x_rms_norm, 0, sizeof(float) * head_dim);
-
-        // Accumulate weighted values in thread-safe way
-        #pragma omp parallel
-        {
-            float tmp[head_dim];
-            memset(tmp, 0, head_dim * sizeof(float));
-
-            #pragma omp for
-            for (int t = 0; t <= pos; t++) {
-                float* v = s->v_cache + loff + t * kv_dim + (h / kv_mul) * head_dim;
-                for (int i = 0; i < head_dim; i++) {
-                    tmp[i] += scores[t] * v[i];
-                }
-            }
-
-            // Reduce thread-local buffer into shared output
-            for (int i = 0; i < head_dim; i++) {
-                #pragma omp atomic
-                x_rms_norm[i] += tmp[i];
-            }
-        }
+        x[i] = real * cos_a - imag * sin_a;
+        x[i + half_dim] = real * sin_a + imag * cos_a;
     }
 }
 
@@ -770,115 +722,208 @@ float silu(float x) {
 }
 
 /// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
-void swish(ForwardState* s, int hidden_dim) {
-    float* mlp_in  = s->mlp_in;  // W1(x)
-    float* mlp_gate = s->mlp_gate; // W3(x)
-
-    #pragma omp parallel for
-    for (int i = 0; i < hidden_dim; i++) {
-        mlp_in[i] = silu(mlp_in[i]) * mlp_gate[i];
+/// @note Modifying this math will corrupt model behavior.
+///       Make sure SiLU and element-wise multiplication are preserved.
+void swiglu(float* x1, float* x3, int size) {
+#pragma omp parallel for
+    for (int i = 0; i < size; i++) {
+        x1[i] = silu(x1[i]) * x3[i];
     }
 }
 
-float *forward(Transformer *transformer, int token, int pos) {
-    // a few convenience variables
-    Params *p = &transformer->config;
-    Weights* w = &transformer->weights;
-    ForwardState* s = &transformer->state;
-    float *x = s->x;
-    int dim = p->dim;
+void attention(Transformer* t, int l, int pos) {
+    Params* p = &t->params;
+    ForwardState* s = &t->state;
+
+    int head_dim = p->head_dim;
+    int kv_mul = p->n_heads / p->n_kv_heads; // multi-query attention
+    int kv_dim = p->n_kv_heads * head_dim;
+    uint64_t loff = (uint64_t) l * p->seq_len * kv_dim;
+
+    for (int h = 0; h < p->n_heads; h++) {
+        float* q = s->q + h * head_dim;
+        float* scores = s->scores + h * p->seq_len;
+        float* head_out = s->x_rms_norm + h * head_dim;
+
+// Compute attention scores
+#pragma omp parallel for
+        for (int i = 0; i <= pos; i++) {
+            float* k = s->k_cache + loff + i * kv_dim + (h / kv_mul) * head_dim;
+            float score = 0.0f;
+            for (int j = 0; j < head_dim; j++) {
+                score += q[j] * k[j];
+            }
+
+            scores[i] = score / sqrtf((float) head_dim);
+        }
+
+        // Normalize scores to get attention weights
+        softmax(scores, pos + 1);
+
+        // Initialize output vector for this head
+        memset(head_out, 0, sizeof(float) * head_dim);
+
+// Accumulate weighted values in thread-safe way
+#pragma omp parallel
+        {
+            float tmp[head_dim];
+            memset(tmp, 0, head_dim * sizeof(float));
+
+#pragma omp for
+            for (int i = 0; i <= pos; i++) {
+                float* v = s->v_cache + loff + i * kv_dim + (h / kv_mul) * head_dim;
+                for (int j = 0; j < head_dim; j++) {
+                    tmp[j] += scores[i] * v[j];
+                }
+            }
+
+            // Reduce thread-local buffer into shared output
+            for (int i = 0; i < head_dim; i++) {
+#pragma omp atomic
+                head_out[i] += tmp[i];
+            }
+        }
+    }
+}
+
+/**
+ *             ┌────────────┐
+ * token ────▶│ embeddings │
+ *             └────────────┘
+ *                   ▼
+ *  ┌────────────────────────────────────────┐
+ *  │          Per Layer (32x)               │
+ *  │                                        │
+ *  │ x ─ RMSNorm ─ QKV ─ Rotary ─ Attention │
+ *  │                │               │       │
+ *  │                ▼               ▼       │
+ *  │           FFN w1/w3        Softmax · V │
+ *  │                │               │       │
+ *  │            SwiGLU <─── Scores ─┘       │
+ *  │                ▼                       │
+ *  │           FFN w2 → add to x            │
+ *  └────────────────────────────────────────┘
+ *                   ▼
+ *            ┌───────────────┐
+ *            | Final RMSNorm |
+ *            └───────────────┘
+ *                   ▼
+ *             ┌────────────┐
+ *             | Classifier |
+ *             └────────────┘
+ *                   ▼
+ *                 logits
+ */
+float* forward(Transformer* t, int token, int pos) {
+    Params* p = &t->params;
+    Weights* w = &t->weights;
+    ForwardState* s = &t->state;
+
     int kv_dim = p->n_kv_heads * p->head_dim;
-    // int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
-    int hidden_dim =  p->hidden_dim;
-    int all_heads_dim = p->n_heads * p->head_dim;
-    // copy the token embedding into x
-    memcpy(x, w->fe + token*dim, dim * sizeof(float));
+    int hidden_dim = p->hidden_dim;
+    int proj_dim = p->n_heads * p->head_dim;
 
-    // forward all the layers
+    /**
+     * Input Embedding
+     * Load the embedding vector for the input token into x (residual stream)
+     */
+    memcpy(s->x, w->fe + token * p->dim, p->dim * sizeof(float));
+
+    /**
+     * Layer Loop
+     */
     for (int l = 0; l < p->n_layers; l++) {
-        // KV cache layer offset
-        uint64_t loff = l * (uint64_t)p->seq_len * kv_dim;
+        // KV cache layer offset for current layer and position
+        uint64_t loff = l * (uint64_t) p->seq_len * kv_dim;
 
-        // Save KV at this time step (pos) to cache
+        // Slice the cache for this time step
         s->k = s->k_cache + loff + pos * kv_dim;
         s->v = s->v_cache + loff + pos * kv_dim;
 
-        // Normalize the input to attention.
-        rmsnorm(s->x_rms_norm, x, w->att_rms_norm + l*dim, dim);
-
-        // Quantize for matmul efficiency.
-        q8_quantize(&s->qx, s->x_rms_norm, dim);
-
-        // Compute Q, K, V for this timestep.
-        matmul(s->q, &s->qx, w->wq + l, dim, all_heads_dim);
-        matmul(s->k, &s->qx, w->wk + l, dim, kv_dim);
-        matmul(s->v, &s->qx, w->wv + l, dim, kv_dim);
-
-        float *gq = w->q_rms_norm + l * p->head_dim;   // 128 floats
-        float *gk = w->k_rms_norm + l * p->head_dim;   // 128 floats
+        /**
+         * Attention RMSNorm
+         * Normalize the input x before computing Q/K/V
+         */
+        rmsnorm(s->x_rms_norm, s->x, w->att_rms_norm + l * p->dim, p->dim);
 
         /**
-         * Q-RMSNorm + rotate each query head
+         * Q/K/V Projection (Quantized Matmuls)
          */
+        q8_quantize(&s->qx, s->x_rms_norm, p->dim);
+        matmul(s->q, &s->qx, w->wq + l, p->dim, proj_dim); // Q
+        matmul(s->k, &s->qx, w->wk + l, p->dim, kv_dim); // K
+        matmul(s->v, &s->qx, w->wv + l, p->dim, kv_dim); // V
+
+        /**
+         * Q & K RMSNorm + Rotary Embedding
+         */
+        float* gq = w->q_rms_norm + l * p->head_dim;
+        float* gk = w->k_rms_norm + l * p->head_dim;
+
         for (int h = 0; h < p->n_heads; h++) {
-            float *q = s->q + h * p->head_dim;
+            float* q = s->q + h * p->head_dim;
+            rmsnorm(q, q, gq, p->head_dim); // Normalize each query head
+            rotary(q, p->head_dim, pos); // Apply positional rotation
+        }
 
-            rmsnorm(q, q, gq, p->head_dim);
-            rotary(q, p->head_dim, pos);
+        for (int h = 0; h < p->n_kv_heads; h++) {
+            float* k = s->k + h * p->head_dim;
+            rmsnorm(k, k, gk, p->head_dim); // Normalize each key head
+            rotary(k, p->head_dim, pos); // Apply positional rotation
         }
 
         /**
-         * K-RMSNorm + rotate each key head
+         * Multi-Head Attention Computation
          */
-        for (int h = 0; h < p->n_kv_heads; h++) {
-            float *k = s->k + h * p->head_dim;
+        attention(t, l, pos); // Uses Q/K/V to compute context → written to x_rms_norm
 
-            rmsnorm(k, k, gk, p->head_dim);
-            rotary(k, p->head_dim, pos);
+        /**
+         * Output Projection + Residual Add
+         */
+        q8_quantize(&s->qx, s->x_rms_norm, proj_dim);
+        matmul(s->x_rms_norm, &s->qx, w->wo + l, proj_dim, p->dim);
+        for (int i = 0; i < p->dim; i++) {
+            s->x[i] += s->x_rms_norm[i]; // Add attention output back into residual stream
         }
 
-        /** 
-         * Multi-headed attention
+        /**
+         * FFN RMSNorm
          */
-        attention(p, s, l, pos);
+        rmsnorm(s->x_rms_norm, s->x, w->ffn_rms_norm + l * p->dim, p->dim);
 
-        // final matmul to get the output of the attention
-        q8_quantize(&s->qx, s->x_rms_norm, all_heads_dim);
-        matmul(s->x_rms_norm, &s->qx, w->wo + l, all_heads_dim, dim);
+        /**
+         * FFN Input Projections (w1 and w3)
+         */
+        q8_quantize(&s->qx, s->x_rms_norm, p->dim);
+        matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim); // w1(x)
+        matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim); // w3(x)
 
-        // residual connection back into x
-        for (int i = 0; i < dim; i++)
-            x[i] += s->x_rms_norm[i];
+        /**
+         * SwiGLU Activation
+         */
+        swiglu(s->mlp_in, s->mlp_gate, hidden_dim); // mlp_in = silu(w1) * w3
 
-        // ffn rmsnorm
-        rmsnorm(s->x_rms_norm, x, w->ffn_rms_norm + l*dim, dim);
-
-        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-        // first calculate self.w1(x) and self.w3(x)
-        q8_quantize(&s->qx, s->x_rms_norm, dim);
-        matmul(s->mlp_in, &s->qx, w->w1 + l, dim, hidden_dim);
-        matmul(s->mlp_gate, &s->qx, w->w3 + l, dim, hidden_dim);
-
-        // SwiGLU non-linearity
-        swish(s, hidden_dim);
-
-        // final matmul to get the output of the ffn
+        /**
+         * FFN Output Projection + Residual Add
+         */
         q8_quantize(&s->qh, s->mlp_in, hidden_dim);
-        matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, dim);
-
-        // residual connection
-        for (int i = 0; i < dim; i++)
-            x[i] += s->x_rms_norm[i];
+        matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
+        for (int i = 0; i < p->dim; i++) {
+            s->x[i] += s->x_rms_norm[i]; // Add FFN output into residual stream
+        }
     }
 
-    // final rmsnorm
-    rmsnorm(x, x, w->out_rms_norm, dim);
+    /**
+     * Final LayerNorm + Output Projection
+     */
+    rmsnorm(s->x, s->x, w->out_rms_norm, p->dim); // Final norm before logits
 
-    // classifier into logits
-    q8_quantize(&s->qx, x, dim);
-    matmul(s->logits, &s->qx, w->cls, dim, p->vocab_size);
+    q8_quantize(&s->qx, s->x, p->dim);
+    matmul(s->logits, &s->qx, w->cls, p->dim, p->vocab_size); // Final linear classifier
     return s->logits;
 }
+
+/** @} */
 
 // ----------------------------------------------------------------------------
 // The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
