@@ -179,3 +179,102 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
 }
 
 /** @} */
+
+/**
+ * @section Tokenizer: Encoder
+ * @{
+ */
+
+void encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
+    // encode the string text (input) into an upper-bound preallocated ids[] array
+    char special_token[t->max_token_length + 1]; // was 64 + 1, max is 128 (this is fixed)
+
+    // create a temporary buffer that will store merge candidates of always two consecutive ids
+    // *2 for concat, +1 for null terminator
+    // UTF-8 is 1 to 4 bytes in length. If max tok len is 1, we need at least 4 bytes, so +3.
+    char* buffer = calloc(t->max_token_length * 2 + 1, sizeof(char));
+
+    // start at 0 ids
+    *n_ids = 0;
+
+    // process the raw (UTF-8) byte sequence of the input string
+    for (char* byte = text; *byte; byte++) {
+        int id, found_special_token = 0;
+
+        // set the buffer to the current byte
+        buffer[0] = *byte;
+        buffer[1] = '\0';
+
+        // special ids begin with < and end with >. If we find a substring beginning with <
+        // and ending with > and there's a token in the vocab for it, use that instead of parsing into
+        // shorter ids
+        if (*byte == '<') {
+            int end_of_token_pos = -1;
+            found_special_token = 0;
+            for (int k = 0; *byte && k < t->max_token_length; k++) {
+                if (byte[k] == '>') {
+                    end_of_token_pos = k;
+                    break;
+                }
+            }
+
+            if (end_of_token_pos != -1) {
+                strncpy(special_token, byte, end_of_token_pos + 1);
+                special_token[end_of_token_pos + 1] = 0;
+
+                id = tokenizer_token_to_id(t, special_token);
+                if (id != -1) {
+                byte += end_of_token_pos;
+                found_special_token = 1;
+                }
+            }
+        }
+
+        // not a special token, just look up the single character
+        if (!found_special_token)
+            id = tokenizer_token_to_id(t, buffer);
+
+        if (id != -1) {
+            // we found this codepoint in vocab, add it as a token
+            ids[(*n_ids)++] = id;
+        } else {
+            printf("Warning: unknown character code point %d in input, skipping.\n", *buffer);
+            (*n_ids)++;
+        }
+    }
+
+    // merge the best consecutive pair each iteration
+    while (1) {
+        float best_score = -1e10;
+        int best_id = -1;
+        int best_idx = -1;
+
+        for (int i = 0; i < (*n_ids - 1); i++) {
+            // check if we can merge the pair (ids[i], ids[i+1])
+            sprintf(buffer, "%s%s", t->tokens[ids[i]].entry, t->tokens[ids[i + 1]].entry);
+            int id = tokenizer_token_to_id(t, buffer);
+
+            if (id != -1 && t->tokens[id].score > best_score) {
+                // this merge pair exists in vocab! record its score and position
+                best_score = t->tokens[id].score;
+                best_id = id;
+                best_idx = i;
+            }
+        }
+
+        if (best_idx == -1)
+            break; // we couldn't find any more pairs to merge, so we're done
+
+        // merge the consecutive pair (best_idx, best_idx+1) into new token best_id
+        ids[best_idx] = best_id;
+        // delete token at position best_idx+1, shift the entire sequence back 1
+        for (int i = best_idx + 1; i < (*n_ids - 1); i++)
+            ids[i] = ids[i + 1];
+
+        (*n_ids)--; // token length decreased
+    }
+
+    free(buffer);
+}
+
+/** @} */

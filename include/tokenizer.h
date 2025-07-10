@@ -9,7 +9,8 @@
 
 #define QTKN_MAGIC 0x71746B6E
 #define QTKN_VERSION 1
-#define QTKN_SEQ_LEN 32768
+#define QTKN_VOCAB_SIZE 151669
+#define QTKN_MAX_SEQ_LEN 32768
 
 /**
  * @section Tokenizer: Chat Template
@@ -58,6 +59,15 @@ void tokenizer_free(Tokenizer* tokenizer);
 
 char* tokenizer_id_to_token(Tokenizer *t, int id);
 int tokenizer_token_to_id(Tokenizer* t, const char* token);
+
+/** @} */
+
+/**
+ * @section Tokenizer: Encoder
+ * @{
+ */
+
+void encode(Tokenizer* t, char* text, int* ids, int* n_ids);
 
 /** @} */
 
