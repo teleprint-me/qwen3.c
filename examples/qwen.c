@@ -935,46 +935,66 @@ typedef struct Template {
     ssize_t size;   // number of bytes read (excluding null terminator)
 } Template;
 
-typedef struct TokenEntry {
-    char* data;     // null-terminated UTF-8 token
+typedef struct Token {
+    char* entry;     // null-terminated UTF-8 token
     float score;    // merge rank or base token marker
-} TokenEntry;
+} Token;
 
 typedef struct Tokenizer {
-    TokenEntry* entries; // token → string + score
+    Token* tokens; // token → string + score
     Template* prompt;    // user-only prompt
     Template* system;    // system + user prompt
-    int max_token_length;
-    int vocab_size;
     int bos_id;
     int eos_id;
+    int vocab_size;
+    int max_token_length;
 } Tokenizer;
 
-Template* template_create(char *in_file, int enable_system, int enable_thinking) {
-    char* suffix = NULL;
+Template* template_create(char* in_file, int enable_system, int enable_thinking) {
+    const char* suffix = NULL;
     if (enable_system) {
         suffix = enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system";
     } else {
         suffix = enable_thinking ? ".template.with-thinking" : ".template";
     }
 
-    Template* template = calloc(1, sizeof(Template));
-    if (!template) return NULL;
+    // Construct full file path
+    size_t len = strlen(in_file) + strlen(suffix);
+    char* file_path = calloc(len + 1, 1);
+    if (!file_path) return NULL;
 
-    size_t in_file_len = strlen(in_file) + strlen(suffix);
-    char* file_path = calloc(in_file_len + 1, in_file_len);
     memcpy(file_path, in_file, strlen(in_file));
-    memcpy(file_path + strlen(in_file), suffix, in_file_len);
-    file_path[in_file_len] = '\0';
+    memcpy(file_path + strlen(in_file), suffix, strlen(suffix));
+    file_path[len] = '\0';
 
     FILE* file = fopen(file_path, "rb");
-    fseek(file, 0, SEEK_END);
-    template->size = ftell(file);
-    rewind(file);
-    fread(template->data, sizeof(uint8_t), template->size, file);
-    fclose(file);
+    free(file_path); // cleanup here is safe
+    if (!file) return NULL;
 
+    fseek(file, 0, SEEK_END);
+    ssize_t size = ftell(file);
+    rewind(file);
+
+    Template* template = calloc(1, sizeof(Template));
+    if (!template) { fclose(file); return NULL; }
+
+    template->size = size;
+    template->data = calloc(size + 1, 1); // null-terminate for convenience
+    if (!template->data) {
+        fclose(file);
+        free(template);
+        return NULL;
+    }
+
+    fread(template->data, 1, size, file);
+    fclose(file);
     return template;
+}
+
+void template_free(Template* t) {
+    if (!t) return;
+    free(t->data);
+    free(t);
 }
 
 void build_tokenizer(Tokenizer *t, char *checkpoint_path, int vocab_size, int enable_thinking) {
