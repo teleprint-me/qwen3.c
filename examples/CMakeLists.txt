@@ -1,5 +1,6 @@
 # examples
 set(EXAMPLES
+    "weights"
     "qwen"
 )
 
