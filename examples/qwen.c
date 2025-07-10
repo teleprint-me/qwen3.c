@@ -444,7 +444,7 @@ bool model_create_state(Transformer* t) {
 
     assert(0 == proj_dim % GS && "proj_dim must be divisible by GS");
     assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
-    assert(0 != cache_len && "Empty cache size");
+    assert(0 != cache_len && "cache_len must be greater than 0");
 
     // Residual stream and attention output
     s->x = calloc(p->dim, sizeof(float)); // persistent
@@ -925,34 +925,56 @@ float* forward(Transformer* t, int token, int pos) {
 
 /** @} */
 
-// ----------------------------------------------------------------------------
-// The Byte Pair Encoding (BPE) Tokenizer that translates strings <-> tokens
+/**
+ * @section Tokenizer Model
+ * @brief Byte Pair Encoding (BPE) Tokenizer to map strings and tokens.
+ */
 
-typedef struct {
-    char **vocab;
-    float *merge_scores;
-    int vocab_size;
+typedef struct Template {
+    char* data;     // dynamically allocated UTF-8 string
+    ssize_t size;   // number of bytes read (excluding null terminator)
+} Template;
+
+typedef struct TokenEntry {
+    char* data;     // null-terminated UTF-8 token
+    float score;    // merge rank or base token marker
+} TokenEntry;
+
+typedef struct Tokenizer {
+    TokenEntry* entries; // token → string + score
+    Template* prompt;    // user-only prompt
+    Template* system;    // system + user prompt
     int max_token_length;
-    int bos_token_id;
-    int eos_token_id;
-    char prompt_template[1024];
-    char system_prompt_template[1024];
+    int vocab_size;
+    int bos_id;
+    int eos_id;
 } Tokenizer;
 
-void load_prompt_template(char *checkpoint_path, char *out_template, int with_system_prompt, int enable_thinking) {
-    char prompt_path[1024];
+Template* template_create(char *in_file, int enable_system, int enable_thinking) {
+    char* suffix = NULL;
+    if (enable_system) {
+        suffix = enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system";
+    } else {
+        suffix = enable_thinking ? ".template.with-thinking" : ".template";
+    }
 
-    strcpy(prompt_path, checkpoint_path);
-    if (with_system_prompt)
-        strcat(prompt_path, enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system");
-    else
-        strcat(prompt_path, enable_thinking ? ".template.with-thinking" : ".template");
+    Template* template = calloc(1, sizeof(Template));
+    if (!template) return NULL;
 
-    memset(out_template, 0, 1024);
-    FILE *file = fopen(prompt_path, "rb");
-    if (!file) { fprintf(stderr, "Couldn't load prompt template %s\n", prompt_path); exit(EXIT_FAILURE); }
-    fread(out_template, 1024, 1, file);
+    size_t in_file_len = strlen(in_file) + strlen(suffix);
+    char* file_path = calloc(in_file_len + 1, in_file_len);
+    memcpy(file_path, in_file, strlen(in_file));
+    memcpy(file_path + strlen(in_file), suffix, in_file_len);
+    file_path[in_file_len] = '\0';
+
+    FILE* file = fopen(file_path, "rb");
+    fseek(file, 0, SEEK_END);
+    template->size = ftell(file);
+    rewind(file);
+    fread(template->data, sizeof(uint8_t), template->size, file);
     fclose(file);
+
+    return template;
 }
 
 void build_tokenizer(Tokenizer *t, char *checkpoint_path, int vocab_size, int enable_thinking) {
@@ -1101,6 +1123,8 @@ void encode(Tokenizer *t, char *text, int *tokens, int *n_tokens) {
 
     free(str_buffer);
 }
+
+/** @} */
 
 // ----------------------------------------------------------------------------
 // The Sampler, which takes logits and returns a sampled token
