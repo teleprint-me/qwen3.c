@@ -49,6 +49,9 @@
 
 /// @note Replace with `Params.group_size` during full allocator refactor.
 /// Currently required to calculate values per quantization group.
+/// Requires ASAN_OPTIONS=detect_odr_violation=0 to disable ODR complaints.
+/// This happens because the library is linked to this binary when it's built
+/// and it's defined in the Q8 header.
 int GS = 2; // global quantization group size
 
 /**
