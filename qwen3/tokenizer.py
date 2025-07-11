@@ -217,6 +217,8 @@ def tokenizer_rank_scores(
             scores[token] = -math.log(rank + 1)
         else:
             scores[token] = -1e6  # Base vocab token
+            # @todo unranked padded tokens get lowest priority
+            # float("-inf")
     return scores
 
 
