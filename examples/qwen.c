@@ -1504,14 +1504,6 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         exit(EXIT_FAILURE);
     }
 
-    fprintf(stderr, "[Generate] Debugging encoder results.\n");
-    for(int i = 0; i < num_prompt_tokens; i++) {
-        printf("%d ", prompt_tokens[i]);
-    }
-    free(prompt_tokens);
-    fprintf(stderr, "\n");
-    return;
-
     // start the main loop
     int next = 0;        // will store the next token in the sequence
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
@@ -1700,6 +1692,17 @@ int main(int argc, char *argv[]) {
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer* tokenizer = tokenizer_create(checkpoint_path, enable_thinking);
     if (!tokenizer) return EXIT_FAILURE;
+
+    if (transformer->params.vocab_size != tokenizer->vocab_size) {
+        fprintf(
+            stderr,
+            "[Error] Vocab size mismatch! transformer=%d, tokenizer=%d\n",
+            transformer->params.vocab_size, tokenizer->vocab_size
+        );
+        tokenizer_free(tokenizer);
+        transformer_free(transformer);
+        return EXIT_FAILURE;
+    }
 
     // build the Sampler
     Sampler sampler;
