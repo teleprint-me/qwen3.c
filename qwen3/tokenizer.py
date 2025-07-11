@@ -151,27 +151,38 @@ def unicode_to_bytes(token: str) -> bytes:
 
 @dataclass
 class Vocab:
+    size: int
     max_token_length: int
     bos_id: int
     eos_id: int
-    tokens_by_id: list[str]
+    tokens: list[str]
     scores: dict[str, float]
 
 
-def tokenizer_config_ids(tokenizer: Tokenizer) -> tuple[str, str]:
-    print("[Tokenizer] Loading bos and eos ids.")
+def tokenizer_config(tokenizer: Tokenizer) -> dict[str, any]:
+    print("[Tokenizer] Loading config metadata.")
 
     # Hack: HuggingFace doesn’t expose bos/eos IDs directly
     config_path = Path(tokenizer.name_or_path) / "config.json"
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
 
-    if "bos_token_id" not in config or "eos_token_id" not in config:
-        print("[Tokenizer] Warning: Using fallback bos and eos ids.")
+    if "bos_token_id" not in config:
+        print("[Tokenizer] Warning: Using fallback bos id.")
+    else:
+        print(f"[Tokenizer] bos_id={config['bos_token_id']}")
 
-    bos_id = config.get("bos_token_id", 151643)
-    eos_id = config.get("eos_token_id", 151645)
-    return bos_id, eos_id
+    if "eos_token_id" not in config:
+        print("[Tokenizer] Warning: Using fallback eos id.")
+    else:
+        print(f"[Tokenizer] eos_id={config['eos_token_id']}")
+
+    if "vocab_size" not in config:
+        print("[Tokenizer] Warning: Using fallback vocab size.")
+    else:
+        print(f"[Tokenizer] vocab_size={config['vocab_size']}")
+
+    return config
 
 
 def tokenizer_rank_table(tokenizer: Tokenizer) -> dict[str, int]:
@@ -213,20 +224,32 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
     """Load vocab mappings and tokenizer metadata."""
     print("[Tokenizer] Generating model vocabulary.")
 
-    vocab_raw = tokenizer.get_vocab()
-    id_to_token = {v: k for k, v in vocab_raw.items()}
-    tokens_by_id = [id_to_token[i] for i in sorted(id_to_token)]
-    max_token_length = max(len(t) for t in tokens_by_id)
-    bos_id, eos_id = tokenizer_config_ids(tokenizer)
-    rank_table = tokenizer_rank_table(tokenizer)
-    rank_scores = tokenizer_rank_scores(rank_table, tokens_by_id)
+    id_to_token = {v: k for k, v in tokenizer.get_vocab().items()}
+    tokens = [id_to_token[i] for i in sorted(id_to_token)]
 
-    print(f"[Tokenizer] Vocab has {len(tokens_by_id)} tokens with max len of {max_token_length}")
+    # Compute target size
+    config = tokenizer_config(tokenizer)
+    vocab_size = config.get("vocab_size", 151936)
+    current_size = len(tokens)
+    missing = vocab_size - current_size
+
+    if missing > 0:
+        print(f"[Tokenizer] Missing {missing} tokens. Adding padded tokens.")
+        start_id = current_size
+        for i in range(missing):
+            tokens.append(f"<|pad_{start_id + i}|>")
+
+    max_token_length = max(len(t) for t in tokens)
+    rank_table = tokenizer_rank_table(tokenizer)
+    rank_scores = tokenizer_rank_scores(rank_table, tokens)
+
+    print(f"[Tokenizer] Vocab has {len(tokens)} tokens with max len of {max_token_length}")
     return Vocab(
+        size=vocab_size,
         max_token_length=max_token_length,
-        bos_id=bos_id,
-        eos_id=eos_id,
-        tokens_by_id=tokens_by_id,
+        bos_id=config.get("bos_token_id", 151643),
+        eos_id=config.get("eos_token_id", 151645),
+        tokens=tokens,
         scores=rank_scores,
     )
 
@@ -237,13 +260,13 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
         # Binary header
         out_f.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
         out_f.write(struct.pack("i", 1))  # 4 bytes
-        out_f.write(struct.pack("i", len(vocab.tokens_by_id)))  # vocab size
+        out_f.write(struct.pack("i", vocab.size))
         out_f.write(struct.pack("i", vocab.max_token_length))
         out_f.write(struct.pack("i", vocab.bos_id))
         out_f.write(struct.pack("i", vocab.eos_id))
 
         # Tokens will be cast to uint8_t on C-side
-        for token in vocab.tokens_by_id:
+        for token in vocab.tokens:
             token_bytes = unicode_to_bytes(token)
             out_f.write(struct.pack("f", vocab.scores[token]))  # float32 score
             out_f.write(struct.pack("i", len(token_bytes)))  # int32 length
