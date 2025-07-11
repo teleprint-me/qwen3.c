@@ -301,6 +301,20 @@ bool model_read_params(Transformer* t, int override_seq_len) {
     }
 
     GS = t->params.group_size;
+
+    fprintf(stderr, "[Params] magic=%s\n", (char*) &t->params.magic);
+    fprintf(stderr, "[Params] version=%d\n", t->params.version);
+    fprintf(stderr, "[Params] hidden_size=%d\n", t->params.dim);
+    fprintf(stderr, "[Params] intermediate_size=%d\n", t->params.hidden_dim);
+    fprintf(stderr, "[Params] num_hidden_layers=%d\n", t->params.n_layers);
+    fprintf(stderr, "[Params] num_attention_heads=%d\n", t->params.n_heads);
+    fprintf(stderr, "[Params] num_kv_heads=%d\n", t->params.n_kv_heads);
+    fprintf(stderr, "[Params] vocab_size=%d\n", t->params.vocab_size);
+    fprintf(stderr, "[Params] ctx_length=%d\n", t->params.seq_len);
+    fprintf(stderr, "[Params] head_dim=%d\n", t->params.head_dim);
+    fprintf(stderr, "[Params] shared_classifier=%d\n", t->params.shared_classifier);
+    fprintf(stderr, "[Params] group_size=%d\n", t->params.group_size); // block size
+
     return true;
 }
 
@@ -393,6 +407,34 @@ bool model_read_weights(Transformer* t) {
      */
     w->cls = p->shared_classifier ? w->qe : q8_tensor_map(&t->model, 1, p->dim * p->vocab_size);
 
+    size_t total_bytes =
+        // FP32 weights
+        p->n_layers * p->dim * 2 * sizeof(float) +       // att + ffn
+        p->dim * sizeof(float) +                         // out
+        p->n_layers * p->head_dim * 2 * sizeof(float) +  // q and k
+
+        // Token Embeddings
+        p->vocab_size * p->dim * sizeof(int8_t) +                      // qe.q
+        (p->vocab_size * p->dim / GS) * sizeof(float) +                // qe.s
+        p->vocab_size * p->dim * sizeof(float) +                       // fe
+
+        // Attention weights
+        2 * p->n_layers * p->dim * proj_dim * sizeof(int8_t) +         // wq, wo (q)
+        2 * p->n_layers * (p->dim * proj_dim / GS) * sizeof(float) +   // wq, wo (s)
+        2 * p->n_layers * p->dim * kv_dim * sizeof(int8_t) +           // wk, wv (q)
+        2 * p->n_layers * (p->dim * kv_dim / GS) * sizeof(float) +     // wk, wv (s)
+
+        // Feedforward weights
+        3 * p->n_layers * p->dim * hidden_dim * sizeof(int8_t) +       // w1, w2, w3 (q)
+        3 * p->n_layers * (p->dim * hidden_dim / GS) * sizeof(float);  // w1, w2, w3 (s)
+
+    if (!p->shared_classifier) {
+        total_bytes += p->dim * p->vocab_size * sizeof(int8_t);        // cls.q
+        total_bytes += (p->dim * p->vocab_size / GS) * sizeof(float);  // cls.s
+    }
+
+    fprintf(stderr, "[Weights] Allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+
     return true;
 }
 
@@ -484,7 +526,7 @@ bool model_create_state(Transformer* t) {
     if (!s->x || !s->x_rms_norm || !s->q || !s->scores || !s->logits || !s->k_cache
         || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
         || !s->qh.s) {
-        fprintf(stderr, "state_create: allocation failed!\n");
+        fprintf(stderr, "[ForwardState] Allocation failed!\n");
         return false;
     }
 
@@ -496,7 +538,8 @@ bool model_create_state(Transformer* t) {
                          p->n_heads * p->seq_len * sizeof(float) + // scores
                          p->vocab_size * sizeof(float) + // logits
                          2 * cache_len * sizeof(float); // kv_cache
-    fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+
+    fprintf(stderr, "[ForwardState] Allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
 
     return true;
 }
@@ -1099,6 +1142,13 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     t->prompt = template_create(in_file, 0, enable_thinking);
     t->system = template_create(in_file, 1, enable_thinking);
 
+    fprintf(stderr, "[Tokenizer] bos_id=%d\n", t->bos_id);
+    fprintf(stderr, "[Tokenizer] eos_id=%d\n", t->eos_id);
+    fprintf(stderr, "[Tokenizer] vocab_size=%d\n", t->vocab_size);
+    fprintf(stderr, "[Tokenizer] max_token_length=%d\n", t->max_token_length);
+    fprintf(stderr, "[Tokenizer] prompt\n%s\n", t->prompt->data);
+    fprintf(stderr, "[Tokenizer] system\n%s\n", t->system->data);
+
     return t;
 }
 
@@ -1409,7 +1459,16 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
     // encode the (string) prompt into tokens sequence
     int num_prompt_tokens = 0;
     int *prompt_tokens = (int*)malloc((strlen(prompt)+3) * sizeof(int)); // +3 for '\0', ?BOS, ?EOS
+    if (!prompt_tokens) {
+        fprintf(stderr, "Failed to allocate memory to input prompt.");
+        exit(EXIT_FAILURE);
+    }
+
     tokenizer_encode(tokenizer, prompt, prompt_tokens, &num_prompt_tokens);
+    if (!prompt_tokens) {
+        fprintf(stderr, "Failed to parse input ids.");
+        exit(EXIT_FAILURE);
+    }
     if (num_prompt_tokens < 1) {
         fprintf(stderr, "Please provide a prompt using -i <string> on the command line.\n");
         exit(EXIT_FAILURE);
@@ -1607,30 +1666,6 @@ int main(int argc, char *argv[]) {
     // build the Sampler
     Sampler sampler;
     build_sampler(&sampler, transformer->params.vocab_size, temperature, topp, rng_seed);
-
-    if (!prompt) {
-        printf(
-            "hidden_size=%d, "
-            "intermediate_size=%d, "
-            "num_hidden_layers=%d, "
-            "num_attention_heads=%d, "
-            "num_kv_heads=%d, "
-            "head_dim=%d, "
-            "ctx_length=%d, "
-            "vocab_size=%d, "
-            "shared_classifier=%d, "
-            "quantization_block_size=%d\n",
-            transformer->params.dim,
-            transformer->params.hidden_dim,
-            transformer->params.n_layers,
-            transformer->params.n_heads,
-            transformer->params.n_kv_heads,
-            transformer->params.head_dim,
-            transformer->params.seq_len,
-            transformer->params.vocab_size,
-            transformer->params.shared_classifier,
-            transformer->params.group_size);
-    }
 
     // run!
     if (strcmp(mode, "generate") == 0) {
