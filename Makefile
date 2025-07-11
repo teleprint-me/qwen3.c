@@ -14,7 +14,7 @@ OPTIONS = -lm -fopenmp -D_FILE_OFFSET_BITS=64
 
 .PHONY: debug
 debug: $(SRC)
-	$(CC) $(SRC) $(OPTIONS) -g3 -o $(BIN)
+	$(CC) $(SRC) $(OPTIONS) -g3 -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BIN)
 
 .PHONY: release
 release: $(SRC)
