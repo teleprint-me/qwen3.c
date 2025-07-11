@@ -1063,7 +1063,7 @@ typedef struct Tokenizer {
     int max_token_length; ///< Maximum UTF-8 length of any token
 } Tokenizer;
 
-Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thinking) {
+Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
     // Build file path for .tokenizer
     const char* suffix = ".tokenizer";
     size_t len = strlen(in_file) + strlen(suffix);
@@ -1101,13 +1101,12 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
         return NULL;
     }
 
-    t->vocab_size = vocab_size;
-
+    fread(&t->vocab_size, sizeof(int32_t), 1, file);
     fread(&t->max_token_length, sizeof(int32_t), 1, file);
     fread(&t->bos_id, sizeof(int32_t), 1, file);
     fread(&t->eos_id, sizeof(int32_t), 1, file);
 
-    t->tokens = calloc(vocab_size, sizeof(Token));
+    t->tokens = calloc(t->vocab_size, sizeof(Token));
     if (!t->tokens) {
         fclose(file);
         free(t);
@@ -1115,7 +1114,7 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     }
 
     // Read each token entry
-    for (int i = 0; i < vocab_size; i++) {
+    for (int i = 0; i < t->vocab_size; i++) {
         float score;
         int length;
 
@@ -1140,6 +1139,7 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
         char* buffer = calloc(length + 1, 1);
         if (!buffer || fread(buffer, 1, length, file) != (size_t) length) {
             fprintf(stderr, "[Tokenizer] Token read error at index %d\n", i);
+            if (buffer) { free(buffer); }
             fclose(file);
             for (int k = 0; k < i; k++) { free(t->tokens[k].entry); }
             free(t->tokens);
@@ -1698,7 +1698,7 @@ int main(int argc, char *argv[]) {
     if (!transformer) return EXIT_FAILURE;
 
     // build the Tokenizer via the tokenizer .bin file
-    Tokenizer* tokenizer = tokenizer_create(checkpoint_path, transformer->params.vocab_size, enable_thinking);
+    Tokenizer* tokenizer = tokenizer_create(checkpoint_path, enable_thinking);
     if (!tokenizer) return EXIT_FAILURE;
 
     // build the Sampler

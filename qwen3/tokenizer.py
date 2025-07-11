@@ -237,6 +237,7 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
         # Binary header
         out_f.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
         out_f.write(struct.pack("i", 1))  # 4 bytes
+        out_f.write(struct.pack("i", len(vocab.tokens_by_id)))  # vocab size
         out_f.write(struct.pack("i", vocab.max_token_length))
         out_f.write(struct.pack("i", vocab.bos_id))
         out_f.write(struct.pack("i", vocab.eos_id))
