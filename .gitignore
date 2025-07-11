@@ -1,6 +1,10 @@
+# directories
 model/
 .vscode/
+
+# files
 .clang-format
+qwen
 
 #
 # C ignore rules
