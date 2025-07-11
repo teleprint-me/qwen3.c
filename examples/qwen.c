@@ -1453,8 +1453,9 @@ int sample(Sampler *sampler, float *logits) {
 // generation loop
 
 void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt) {
-    char *empty_prompt = "";
-    if (prompt == NULL) { prompt = empty_prompt; }
+    if (prompt == NULL) { prompt = ""; }
+
+    fprintf(stderr, "[Generate] prompt\n%s", prompt);
 
     // encode the (string) prompt into tokens sequence
     int num_prompt_tokens = 0;
