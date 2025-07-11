@@ -2,7 +2,6 @@
 set(EXAMPLES
     "weights"
     "tokenizer"
-    "qwen"
 )
 
 set(INPUT_DIR ${PROJECT_SOURCE_DIR}/examples)
