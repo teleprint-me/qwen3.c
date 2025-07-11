@@ -238,6 +238,7 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
         start_id = current_size
         for i in range(missing):
             tokens.append(f"<|pad_{start_id + i}|>")
+        assert len(tokens) == vocab_size, "Vocab size must be equal to model embed dim"
 
     max_token_length = max(len(t) for t in tokens)
     rank_table = tokenizer_rank_table(tokenizer)
