@@ -460,13 +460,12 @@ float *forward(Transformer *transformer, int token, int pos) {
     Config *p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
-    int dim = p->dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
     // int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int all_heads_dim = p->n_heads * p->head_dim;
     // copy the token embedding into x
-    memcpy(s->x, w->token_embedding_table + token*dim, dim * sizeof(float));
+    memcpy(s->x, w->token_embedding_table + token * p->dim, p->dim * sizeof(float));
 
     // forward all the layers
     for (int l = 0; l < p->n_layers; l++) {
@@ -478,15 +477,15 @@ float *forward(Transformer *transformer, int token, int pos) {
         s->v = s->value_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->xb, s->x, w->rms_att_weight + l*dim, dim);
+        rmsnorm(s->xb, s->x, w->rms_att_weight + l * p->dim, p->dim);
 
         // Quantize for matmul efficiency.
-        quantize(&s->xq, s->xb, dim);
+        quantize(&s->xq, s->xb, p->dim);
 
         // Compute Q, K, V for this timestep.
-        matmul(s->q, &s->xq, w->wq + l, dim, all_heads_dim);
-        matmul(s->k, &s->xq, w->wk + l, dim, kv_dim);
-        matmul(s->v, &s->xq, w->wv + l, dim, kv_dim);
+        matmul(s->q, &s->xq, w->wq + l, p->dim, all_heads_dim);
+        matmul(s->k, &s->xq, w->wk + l, p->dim, kv_dim);
+        matmul(s->v, &s->xq, w->wv + l, p->dim, kv_dim);
 
         float *gq = w->q_ln_weights + l * p->head_dim;   // 128 floats
         float *gk = w->k_ln_weights + l * p->head_dim;   // 128 floats
@@ -518,39 +517,39 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // final matmul to get the output of the attention
         quantize(&s->xq, s->xb, all_heads_dim);
-        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, dim);
+        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, p->dim);
 
         // residual connection back into x
-        for (int i = 0; i < dim; i++)
+        for (int i = 0; i < p->dim; i++)
             s->x[i] += s->xb[i];
 
         // ffn rmsnorm
-        rmsnorm(s->xb, s->x, w->rms_ffn_weight + l*dim, dim);
+        rmsnorm(s->xb, s->x, w->rms_ffn_weight + l*p->dim, p->dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
-        quantize(&s->xq, s->xb, dim);
-        matmul(s->hb, &s->xq, w->w1 + l, dim, hidden_dim);
-        matmul(s->hb2, &s->xq, w->w3 + l, dim, hidden_dim);
+        quantize(&s->xq, s->xb, p->dim);
+        matmul(s->hb, &s->xq, w->w1 + l, p->dim, hidden_dim);
+        matmul(s->hb2, &s->xq, w->w3 + l, p->dim, hidden_dim);
 
         // SwiGLU non-linearity
         swish(s, hidden_dim);
 
         // final matmul to get the output of the ffn
         quantize(&s->hq, s->hb, hidden_dim);
-        matmul(s->xb, &s->hq, w->w2 + l, hidden_dim, dim);
+        matmul(s->xb, &s->hq, w->w2 + l, hidden_dim, p->dim);
 
         // residual connection
-        for (int i = 0; i < dim; i++)
+        for (int i = 0; i < p->dim; i++)
             s->x[i] += s->xb[i];
     }
 
     // final rmsnorm
-    rmsnorm(s->x, s->x, w->rms_final_weight, dim);
+    rmsnorm(s->x, s->x, w->rms_final_weight, p->dim);
 
     // classifier into logits
-    quantize(&s->xq, s->x, dim);
-    matmul(s->logits, &s->xq, w->wcls, dim, p->vocab_size);
+    quantize(&s->xq, s->x, p->dim);
+    matmul(s->logits, &s->xq, w->wcls, p->dim, p->vocab_size);
     return s->logits;
 }
 
