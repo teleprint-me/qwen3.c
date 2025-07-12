@@ -445,13 +445,12 @@ float silu(float x) {
 }
 
 /// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
-void swish(RunState* s, int hidden_dim) {
-    float* hb  = s->hb;  // W1(x)
-    float* hb2 = s->hb2; // W3(x)
-
-    #pragma omp parallel for
-    for (int i = 0; i < hidden_dim; i++) {
-        hb[i] = silu(hb[i]) * hb2[i];
+/// @note Modifying this math will corrupt model behavior.
+///       Make sure SiLU and element-wise multiplication are preserved.
+void swiglu(float* x1, float* x3, int size) {
+#pragma omp parallel for
+    for (int i = 0; i < size; i++) {
+        x1[i] = silu(x1[i]) * x3[i];
     }
 }
 
@@ -534,7 +533,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         matmul(s->hb2, &s->xq, w->w3 + l, p->dim, p->hidden_dim);
 
         // SwiGLU non-linearity
-        swish(s, p->hidden_dim);
+        swiglu(s->hb, s->hb2, p->hidden_dim);
 
         // final matmul to get the output of the ffn
         quantize(&s->hq, s->hb, p->hidden_dim);
