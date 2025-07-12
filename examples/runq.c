@@ -460,10 +460,11 @@ float *forward(Transformer *transformer, int token, int pos) {
     Config *p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
+
     int kv_dim = p->n_kv_heads * p->head_dim;
-    // int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int all_heads_dim = p->n_heads * p->head_dim;
+
     // copy the token embedding into x
     memcpy(s->x, w->token_embedding_table + token * p->dim, p->dim * sizeof(float));
 
