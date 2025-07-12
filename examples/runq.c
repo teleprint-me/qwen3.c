@@ -85,7 +85,6 @@ typedef struct RunState {
     // current wave of activations
     float *x; // activation at current time stamp (dim,)
     float *xb; // same, but inside a residual branch (dim,)
-    float *xb2; // an additional buffer just for convenience (dim,)
     float *hb; // buffer for hidden dimension in the ffn (hidden_dim,)
     float *hb2; // buffer for hidden dimension in the ffn (hidden_dim,)
     QuantizedTensor xq; // quantized x (dim,)
@@ -115,7 +114,6 @@ void malloc_run_state(RunState* s, Config *p) {
 
     s->x = calloc(p->dim, sizeof(float));
     s->xb = calloc(all_heads_dim, sizeof(float));
-    s->xb2 = calloc(p->dim, sizeof(float));
     s->hb = calloc(p->hidden_dim, sizeof(float));
     s->hb2 = calloc(p->hidden_dim, sizeof(float));
     s->xq = (QuantizedTensor) { .q = calloc(all_heads_dim, sizeof(int8_t)), .s = calloc(all_heads_dim / GS, sizeof(float)) };
@@ -127,7 +125,7 @@ void malloc_run_state(RunState* s, Config *p) {
     s->value_cache = calloc(p->n_layers * (uint64_t)p->seq_len * kv_dim, sizeof(float));
 
     // ensure all mallocs went fine
-    if (!s->x || !s->xb || !s->xb2 || !s->hb || !s->hb2 || !s->q
+    if (!s->x || !s->xb || !s->hb || !s->hb2 || !s->q
      || !s->att || !s->logits || !s->key_cache
      || !s->value_cache) {
         fprintf(stderr, "malloc failed!\n");
@@ -138,7 +136,6 @@ void malloc_run_state(RunState* s, Config *p) {
 void free_run_state(RunState* s) {
     free(s->x);
     free(s->xb);
-    free(s->xb2);
     free(s->hb);
     free(s->hb2);
     free(s->xq.q);
@@ -463,14 +460,13 @@ float *forward(Transformer *transformer, int token, int pos) {
     Config *p = &transformer->config;
     TransformerWeights* w = &transformer->weights;
     RunState* s = &transformer->state;
-    float *x = s->x;
     int dim = p->dim;
     int kv_dim = p->n_kv_heads * p->head_dim;
     // int kv_mul = p->n_heads / p->n_kv_heads; // integer multiplier of the kv sharing in multiquery
     int hidden_dim =  p->hidden_dim;
     int all_heads_dim = p->n_heads * p->head_dim;
     // copy the token embedding into x
-    memcpy(x, w->token_embedding_table + token*dim, dim * sizeof(float));
+    memcpy(s->x, w->token_embedding_table + token*dim, dim * sizeof(float));
 
     // forward all the layers
     for (int l = 0; l < p->n_layers; l++) {
@@ -482,7 +478,7 @@ float *forward(Transformer *transformer, int token, int pos) {
         s->v = s->value_cache + loff + pos * kv_dim;
 
         // Normalize the input to attention.
-        rmsnorm(s->xb, x, w->rms_att_weight + l*dim, dim);
+        rmsnorm(s->xb, s->x, w->rms_att_weight + l*dim, dim);
 
         // Quantize for matmul efficiency.
         quantize(&s->xq, s->xb, dim);
@@ -522,14 +518,14 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // final matmul to get the output of the attention
         quantize(&s->xq, s->xb, all_heads_dim);
-        matmul(s->xb2, &s->xq, w->wo + l, all_heads_dim, dim);
+        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, dim);
 
         // residual connection back into x
         for (int i = 0; i < dim; i++)
-            x[i] += s->xb2[i];
+            s->x[i] += s->xb[i];
 
         // ffn rmsnorm
-        rmsnorm(s->xb, x, w->rms_ffn_weight + l*dim, dim);
+        rmsnorm(s->xb, s->x, w->rms_ffn_weight + l*dim, dim);
 
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
@@ -546,14 +542,14 @@ float *forward(Transformer *transformer, int token, int pos) {
 
         // residual connection
         for (int i = 0; i < dim; i++)
-            x[i] += s->xb[i];
+            s->x[i] += s->xb[i];
     }
 
     // final rmsnorm
-    rmsnorm(x, x, w->rms_final_weight, dim);
+    rmsnorm(s->x, s->x, w->rms_final_weight, dim);
 
     // classifier into logits
-    quantize(&s->xq, x, dim);
+    quantize(&s->xq, s->x, dim);
     matmul(s->logits, &s->xq, w->wcls, dim, p->vocab_size);
     return s->logits;
 }
