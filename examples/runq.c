@@ -23,13 +23,8 @@
 #include <string.h>
 #include <fcntl.h>
 #include <omp.h>
-
-#if defined _WIN32
-    #include "win.h"
-#else
-    #include <unistd.h>
-    #include <sys/mman.h>
-#endif
+#include <unistd.h>
+#include <sys/mman.h>
 
 // ----------------------------------------------------------------------------
 // Globals
@@ -249,13 +244,8 @@ void read_checkpoint(char *checkpoint, Config *config, TransformerWeights* weigh
     FILE *file = fopen(checkpoint, "rb");
     if (!file) { fprintf(stderr, "Couldn't open checkpoint %s\n", checkpoint); exit(EXIT_FAILURE); }
 
-    #if defined _WIN32
-        _fseeki64(file, 0, SEEK_END); // move file pointer to end of file
-        *file_size = _ftelli64(file); // get the file size, in bytes
-    #else
-        fseek(file, 0, SEEK_END); // move file pointer to end of file
-        *file_size = ftell(file); // get the file size, in bytes
-    #endif
+    fseek(file, 0, SEEK_END); // move file pointer to end of file
+    *file_size = ftell(file); // get the file size, in bytes
 
     *data = mmap(NULL, *file_size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
     if (*data == MAP_FAILED) { fprintf(stderr, "mmap failed!\n"); exit(EXIT_FAILURE); }
@@ -579,8 +569,8 @@ typedef struct {
 
 void load_prompt_template(char *checkpoint_path, char *out_template, int with_system_prompt, int enable_thinking) {
     char prompt_path[1024];
-
     strcpy(prompt_path, checkpoint_path);
+
     if (with_system_prompt)
         strcat(prompt_path, enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system");
     else
@@ -593,27 +583,38 @@ void load_prompt_template(char *checkpoint_path, char *out_template, int with_sy
     fclose(file);
 }
 
-void build_tokenizer(Tokenizer *t, char *checkpoint_path, int vocab_size, int enable_thinking) {
+void build_tokenizer(Tokenizer *t, char *checkpoint_path, int enable_thinking) {
     char tokenizer_path[1024];
-
     strcpy(tokenizer_path, checkpoint_path);
     strcat(tokenizer_path, ".tokenizer");
 
-    t->vocab_size = vocab_size;
-    // malloc space to hold the scores and the strings
-    t->vocab = (char **)malloc(vocab_size * sizeof(char *));
-    t->merge_scores = (float *)malloc(vocab_size * sizeof(float));
-
-    // read in the file
+    // Read file
     FILE *file = fopen(tokenizer_path, "rb");
-    if (!file) { fprintf(stderr, "Couldn't load tokenizer model %s\n", tokenizer_path); exit(EXIT_FAILURE); }
+    if (!file) {
+        fprintf(stderr, "Couldn't load tokenizer model %s\n", tokenizer_path);
+        exit(EXIT_FAILURE);
+    }
+
+    // Read header
+    uint32_t magic = 0;
+    int32_t version = 0;
+    fread(&magic, sizeof(uint32_t), 1, file);
+    fread(&version, sizeof(int32_t), 1, file);
+    if (0x71746B6E != magic || 1 != version) {
+        fprintf(stderr, "[Tokenizer] Invalid tokenizer format.\n");
+        fclose(file);
+        exit(EXIT_FAILURE);
+    }
+    fread(&t->vocab_size, sizeof(int), 1, file);
     fread(&t->max_token_length, sizeof(int), 1, file);
     fread(&t->bos_token_id, sizeof(int), 1, file);
     fread(&t->eos_token_id, sizeof(int), 1, file);
 
+    // Read vocab ids and scores
     int len;
-
-    for (int i = 0; i < vocab_size; i++) {
+    t->vocab = (char **)malloc(t->vocab_size * sizeof(char *));
+    t->merge_scores = (float *)malloc(t->vocab_size * sizeof(float));
+    for (int i = 0; i < t->vocab_size; i++) {
         if (fread(t->merge_scores + i, sizeof(float), 1, file) != 1) {
             t->vocab[i] = (char *)malloc(1);
             t->vocab[i][0] = '\0'; // add the string terminating token
@@ -626,6 +627,7 @@ void build_tokenizer(Tokenizer *t, char *checkpoint_path, int vocab_size, int en
     }
     fclose(file);
 
+    // Read chat templates
     load_prompt_template(checkpoint_path, t->prompt_template, 0, enable_thinking);
     load_prompt_template(checkpoint_path, t->system_prompt_template, 1, enable_thinking);
 }
@@ -1084,7 +1086,7 @@ int main(int argc, char *argv[]) {
 
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer tokenizer;
-    build_tokenizer(&tokenizer, checkpoint_path, transformer.config.vocab_size, enable_thinking);
+    build_tokenizer(&tokenizer, checkpoint_path, enable_thinking);
 
     // build the Sampler
     Sampler sampler;
