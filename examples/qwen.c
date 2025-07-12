@@ -1449,6 +1449,7 @@ unsigned int random_u32(unsigned long long *state) {
     *state ^= *state >> 27;
     return (*state * 0x2545F4914F6CDD1Dull) >> 32;
 }
+
 float random_f32(unsigned long long *state) { // random float32 in [0,1)
     return (random_u32(state) >> 8) / 16777216.0f;
 }
@@ -1481,42 +1482,42 @@ int sample(Sampler *sampler, float *logits) {
 // ----------------------------------------------------------------------------
 // generation loop
 
-void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *prompt) {
-    if (prompt == NULL) { prompt = ""; }
-
+void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
     fprintf(stderr, "[Generate] prompt\n%s", prompt);
 
-    // encode the (string) prompt into tokens sequence
-    int num_prompt_tokens = 0;
-    int *prompt_tokens = (int*)malloc((strlen(prompt)+3) * sizeof(int)); // +3 for '\0', ?BOS, ?EOS
-    if (!prompt_tokens) {
-        fprintf(stderr, "Failed to allocate memory to input prompt.");
+    if (!prompt) { prompt = ""; }
+    int prompt_len = strlen(prompt);
+    if (prompt_len < 1) {
+        fprintf(stderr, "[Generate] Error: Missing prompt. Use -i 'string'.\n");
         exit(EXIT_FAILURE);
     }
 
-    tokenizer_encode(tokenizer, prompt, prompt_tokens, &num_prompt_tokens);
-    if (!prompt_tokens) {
-        fprintf(stderr, "Failed to parse input ids.");
+    // encode the (string) prompt into tokens sequence
+    int* ids = calloc(prompt_len + 1, sizeof(int)); // +1 for null
+    if (!ids) {
+        fprintf(stderr, "[Generate] Failed to allocate memory for input ids.");
         exit(EXIT_FAILURE);
     }
-    if (num_prompt_tokens < 1) {
+
+    int n_ids = 0;
+    tokenizer_encode(tokenizer, prompt, ids, &n_ids);
+    if (n_ids < 1) {
         fprintf(stderr, "Please provide a prompt using -i <string> on the command line.\n");
         exit(EXIT_FAILURE);
     }
 
     // start the main loop
-    int next = 0;        // will store the next token in the sequence
-    int token = prompt_tokens[0]; // kick off with the first token in the prompt
-    int pos = 0;     // position in the sequence
-
+    int pos = 0; // position in the sequence
+    int next = 0; // will store the next token in the sequence
+    int token = ids[0]; // kick off with the first token in the prompt
     while (pos < transformer->params.seq_len) {
         // forward the transformer to get logits for the next token
-        float *logits = forward(transformer, token, pos);
+        float* logits = forward(transformer, token, pos);
 
         // advance the state state machine
-        if (pos < num_prompt_tokens - 1) {
+        if (pos < n_ids - 1 && pos + 1 < n_ids) {
             // if we are still processing the input prompt, force the next prompt token
-            next = prompt_tokens[pos + 1];
+            next = ids[pos + 1];
         } else {
             // otherwise sample the next token from the logits
             next = sample(sampler, logits);
@@ -1526,14 +1527,17 @@ void generate(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, 
         // print the token as string, decode it with the Tokenizer object
         printf("%s", tokenizer_id_to_token(tokenizer, token));
         fflush(stdout);
-        token = next;
 
         // data-dependent terminating condition: the BOS token delimits sequences
-        if (pos >= num_prompt_tokens && (next == tokenizer->bos_id || next == tokenizer->eos_id))
+        if (pos >= n_ids && (next == tokenizer->bos_id || next == tokenizer->eos_id)) {
             break;
+        }
+
+        token = next;
     }
+
     printf("\n");
-    free(prompt_tokens);
+    free(ids);
 }
 
 void read_stdin(const char *guide, char *buffer, size_t bufsize) {
