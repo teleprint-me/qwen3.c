@@ -1405,6 +1405,9 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
             n0++;
         }
     }
+
+    fprintf(stderr, "[Topp] Filtering threshold cutoff = %.9f\n", cutoff);
+
     qsort(probindex, n0, sizeof(ProbIndex), compare);
 
     // truncate the list where cumulative probability exceeds topp
@@ -1418,28 +1421,55 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
         }
     }
 
+    fprintf(stderr, "[Topp] Filtered %d out of %d tokens\n", n0, n);
+    fprintf(stderr, "[Topp] Selected %d tokens after cumulative cut\n", last_idx + 1);
+
     // sample from the truncated list
     float r = coin * cumulative_prob;
     float cdf = 0;
     for (int i = 0; i <= last_idx; i++) {
         cdf += probindex[i].prob;
-        if (r < cdf)
+        if (r < cdf) {
+            fprintf(stderr, "[Topp] Sampled token index: %d\n", probindex[i].index);
             return probindex[i].index;
+        }
     }
+
+    fprintf(stderr, "[Topp] Fallback to last index: %d\n", probindex[last_idx].index);
     return probindex[last_idx].index; // in case of rounding errors
 }
 
-void build_sampler(Sampler *sampler, int vocab_size, float temperature, float topp, unsigned long long rng_seed) {
-    sampler->vocab_size = vocab_size;
-    sampler->temperature = temperature;
-    sampler->topp = topp;
-    sampler->rng_state = rng_seed;
+Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned long long rng_seed) {
+    Sampler* s = calloc(1, sizeof(Sampler));
+    if (!s) { return NULL; }
+
     // buffer only used with nucleus sampling; may not need but it's ~small
-    sampler->probindex = malloc(sampler->vocab_size * sizeof(ProbIndex));
+    s->probindex = calloc(s->vocab_size, sizeof(ProbIndex));
+    if (!s->probindex) {
+        free(s);
+        return NULL;
+    }
+
+    s->vocab_size = vocab_size;
+    s->temperature = temperature;
+    s->topp = topp;
+    s->rng_state = rng_seed;
+
+    fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
+    fprintf(stderr, "[Sampler] vocab_size=%d\n", s->vocab_size);
+    fprintf(stderr, "[Sampler] top_p=%d\n", s->topp);
+    fprintf(stderr, "[Sampler] seed=%d\n", s->rng_state);
+
+    return s;
 }
 
-void free_sampler(Sampler *sampler) {
-    free(sampler->probindex);
+void sampler_free(Sampler* s) {
+    if (s) {
+        if (s->probindex) {
+            free(s->probindex);
+        }
+        free(s);
+    }
 }
 
 unsigned int random_u32(unsigned long long *state) {
@@ -1463,10 +1493,23 @@ int sample(Sampler *sampler, float *logits) {
     } else {
         // apply the temperature to the logits
         for (int q=0; q<sampler->vocab_size; q++) { logits[q] /= sampler->temperature; }
+
+        fprintf(stderr, "[Sampler] Dumping top 10 logits (pre-softmax):\n");
+        for (int i = 0; i < 10; i++) {
+            fprintf(stderr, "  logits[%d] = %f\n", i, logits[i]);
+        }
+
         // apply softmax to the logits to get the probabilities for next token
         softmax(logits, sampler->vocab_size);
+
+        fprintf(stderr, "[Sampler] Dumping top 10 probabilities (post-softmax):\n");
+        for (int i = 0; i < 10; i++) {
+            fprintf(stderr, "  probs[%d] = %f\n", i, logits[i]); // logits overwritten by softmax
+        }
+
         // flip a (float) coin (this is our source of entropy for sampling)
         float coin = random_f32(&sampler->rng_state);
+
         // we sample from this distribution to get the next token
         if (sampler->topp <= 0 || sampler->topp >= 1) {
             // simply sample from the predicted probability distribution
@@ -1709,21 +1752,21 @@ int main(int argc, char *argv[]) {
     }
 
     // build the Sampler
-    Sampler sampler;
-    build_sampler(&sampler, transformer->params.vocab_size, temperature, topp, rng_seed);
+    Sampler* sampler = sampler_create(transformer->params.vocab_size, temperature, topp, rng_seed);
+    if(!sampler) return EXIT_FAILURE;
 
     // run!
     if (strcmp(mode, "generate") == 0) {
-        generate(transformer, tokenizer, &sampler, prompt);
+        generate(transformer, tokenizer, sampler, prompt);
     } else if (strcmp(mode, "chat") == 0) {
-        chat(transformer, tokenizer, &sampler, prompt, system_prompt);
+        chat(transformer, tokenizer, sampler, prompt, system_prompt);
     } else {
         fprintf(stderr, "Unknown mode: %s\n", mode);
         error_usage();
     }
 
     // memory and file handles cleanup
-    free_sampler(&sampler);
+    sampler_free(sampler);
     tokenizer_free(tokenizer);
     transformer_free(transformer);
     return 0;
