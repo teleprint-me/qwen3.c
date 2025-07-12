@@ -1455,10 +1455,10 @@ Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned 
     s->topp = topp;
     s->rng_state = rng_seed;
 
-    fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
     fprintf(stderr, "[Sampler] vocab_size=%d\n", s->vocab_size);
-    fprintf(stderr, "[Sampler] top_p=%d\n", s->topp);
-    fprintf(stderr, "[Sampler] seed=%d\n", s->rng_state);
+    fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
+    fprintf(stderr, "[Sampler] top_p=%f\n", s->topp);
+    fprintf(stderr, "[Sampler] seed=%lu\n", s->rng_state);
 
     return s;
 }
