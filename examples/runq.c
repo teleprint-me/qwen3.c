@@ -380,7 +380,10 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
-void attention(Config* p, RunState* s, int l, int pos) {
+void attention(Transformer* t, int l, int pos) {
+    Config* p = &t->config;
+    RunState* s = &t->state;
+
     int head_dim = p->head_dim;
     int kv_mul   = p->n_heads / p->n_kv_heads;
     int kv_dim   = p->n_kv_heads * head_dim;
@@ -486,25 +489,20 @@ float *forward(Transformer *t, int token, int pos) {
         matmul(s->k, &s->xq, w->wk + l, p->dim, kv_dim);
         matmul(s->v, &s->xq, w->wv + l, p->dim, kv_dim);
 
-        float *gq = w->q_ln_weights + l * p->head_dim;   // 128 floats
-        float *gk = w->k_ln_weights + l * p->head_dim;   // 128 floats
+        float* gq = w->q_ln_weights + l * p->head_dim;   // 128 floats
+        float* gk = w->k_ln_weights + l * p->head_dim;   // 128 floats
 
         /**
-         * Q-RMSNorm + rotate each query head
+         * Q & K RMSNorm + Rotary Embedding
          */
         for (int h = 0; h < p->n_heads; h++) {
-            float *q = s->q + h * p->head_dim;
-
+            float* q = s->q + h * p->head_dim;
             rmsnorm(q, q, gq, p->head_dim);
             rotary(q, p->head_dim, pos);
         }
 
-        /**
-         * K-RMSNorm + rotate each key head
-         */
         for (int h = 0; h < p->n_kv_heads; h++) {
-            float *k = s->k + h * p->head_dim;
-
+            float* k = s->k + h * p->head_dim;
             rmsnorm(k, k, gk, p->head_dim);
             rotary(k, p->head_dim, pos);
         }
@@ -512,45 +510,51 @@ float *forward(Transformer *t, int token, int pos) {
         /** 
          * Multi-headed attention
          */
-        attention(p, s, l, pos);
+        attention(t, l, pos);
 
-        // final matmul to get the output of the attention
+        /**
+         * Output Projection + Residual Add
+         */
         quantize(&s->xq, s->xb, proj_dim);
         matmul(s->xb, &s->xq, w->wo + l, proj_dim, p->dim);
-
-        // residual connection back into x
         for (int i = 0; i < p->dim; i++) {
             s->x[i] += s->xb[i];
         }
 
-        // ffn rmsnorm
-        rmsnorm(s->xb, s->x, w->rms_ffn_weight + l*p->dim, p->dim);
+        /**
+         * FFN RMSNorm
+         */
+        rmsnorm(s->xb, s->x, w->rms_ffn_weight + l * p->dim, p->dim);
 
-        // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
-        // first calculate self.w1(x) and self.w3(x)
+        /**
+         * FFN Input Projections (w1 and w3)
+         */
         quantize(&s->xq, s->xb, p->dim);
         matmul(s->hb, &s->xq, w->w1 + l, p->dim, p->hidden_dim);
         matmul(s->hb2, &s->xq, w->w3 + l, p->dim, p->hidden_dim);
 
-        // SwiGLU non-linearity
+        /**
+         * SwiGLU Activation
+         */
         swiglu(s->hb, s->hb2, p->hidden_dim);
 
-        // final matmul to get the output of the ffn
+        /**
+         * FFN Output Projection + Residual Add
+         */
         quantize(&s->hq, s->hb, p->hidden_dim);
         matmul(s->xb, &s->hq, w->w2 + l, p->hidden_dim, p->dim);
-
-        // residual connection
         for (int i = 0; i < p->dim; i++) {
             s->x[i] += s->xb[i];
         }
     }
 
-    // final rmsnorm
-    rmsnorm(s->x, s->x, w->rms_final_weight, p->dim);
+    /**
+     * Final LayerNorm + Output Projection
+     */
+    rmsnorm(s->x, s->x, w->rms_final_weight, p->dim);  // Final norm before logits
 
-    // classifier into logits
     quantize(&s->xq, s->x, p->dim);
-    matmul(s->logits, &s->xq, w->wcls, p->dim, p->vocab_size);
+    matmul(s->logits, &s->xq, w->wcls, p->dim, p->vocab_size); // Final linear classifier
     return s->logits;
 }
 
