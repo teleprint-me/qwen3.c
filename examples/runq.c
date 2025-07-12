@@ -462,7 +462,6 @@ float *forward(Transformer *transformer, int token, int pos) {
     RunState* s = &transformer->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
-    int hidden_dim =  p->hidden_dim;
     int all_heads_dim = p->n_heads * p->head_dim;
 
     // copy the token embedding into x
@@ -530,15 +529,15 @@ float *forward(Transformer *transformer, int token, int pos) {
         // Now for FFN in PyTorch we have: self.w2(F.silu(self.w1(x)) * self.w3(x))
         // first calculate self.w1(x) and self.w3(x)
         quantize(&s->xq, s->xb, p->dim);
-        matmul(s->hb, &s->xq, w->w1 + l, p->dim, hidden_dim);
-        matmul(s->hb2, &s->xq, w->w3 + l, p->dim, hidden_dim);
+        matmul(s->hb, &s->xq, w->w1 + l, p->dim, p->hidden_dim);
+        matmul(s->hb2, &s->xq, w->w3 + l, p->dim, p->hidden_dim);
 
         // SwiGLU non-linearity
-        swish(s, hidden_dim);
+        swish(s, p->hidden_dim);
 
         // final matmul to get the output of the ffn
-        quantize(&s->hq, s->hb, hidden_dim);
-        matmul(s->xb, &s->hq, w->w2 + l, hidden_dim, p->dim);
+        quantize(&s->hq, s->hb, p->hidden_dim);
+        matmul(s->xb, &s->hq, w->w2 + l, p->hidden_dim, p->dim);
 
         // residual connection
         for (int i = 0; i < p->dim; i++)
