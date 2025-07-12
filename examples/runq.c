@@ -520,8 +520,9 @@ float *forward(Transformer *transformer, int token, int pos) {
         matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, p->dim);
 
         // residual connection back into x
-        for (int i = 0; i < p->dim; i++)
+        for (int i = 0; i < p->dim; i++) {
             s->x[i] += s->xb[i];
+        }
 
         // ffn rmsnorm
         rmsnorm(s->xb, s->x, w->rms_ffn_weight + l*p->dim, p->dim);
@@ -540,8 +541,9 @@ float *forward(Transformer *transformer, int token, int pos) {
         matmul(s->xb, &s->hq, w->w2 + l, p->hidden_dim, p->dim);
 
         // residual connection
-        for (int i = 0; i < p->dim; i++)
+        for (int i = 0; i < p->dim; i++) {
             s->x[i] += s->xb[i];
+        }
     }
 
     // final rmsnorm
