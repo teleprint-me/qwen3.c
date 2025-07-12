@@ -8,22 +8,31 @@
 # 	OMP_NUM_THREADS=4 ./qwen model/weights.bin
 
 CC = gcc
-SRC = examples/qwen.c
-BIN = qwen
+
 OPTIONS = -lm -fopenmp -D_FILE_OFFSET_BITS=64
 
+RUNQ_SRC = examples/runq.c
+RUNQ_BIN = runq
+
+QWEN_SRC = examples/qwen.c
+QWEN_BIN = qwen
+
 .PHONY: debug
-debug: $(SRC)
-	$(CC) $(SRC) $(OPTIONS) -g3 -fsanitize=address,undefined -fno-omit-frame-pointer -o $(BIN)
+debug: $(QWEN_SRC)
+	$(CC) $(QWEN_SRC) $(OPTIONS) -g3 -fsanitize=address,undefined -fno-omit-frame-pointer -o $(QWEN_BIN)
 
 .PHONY: release
-release: $(SRC)
-	$(CC) $(SRC) $(OPTIONS) -O3 -o $(BIN)
+release: $(QWEN_SRC)
+	$(CC) $(QWEN_SRC) $(OPTIONS) -O3 -o $(QWEN_BIN)
 
-.PHONY: fast
-openmp: $(SRC)
-	$(CC) $(SRC) $(OPTIONS) -Ofast -march=native -o $(BIN)
+.PHONY: optimized
+openmp: $(QWEN_SRC)
+	$(CC) $(QWEN_SRC) $(OPTIONS) -Ofast -march=native -o $(QWEN_BIN)
+
+.PHONY: runq
+runq: examples/runq.c
+	$(CC) examples/runq.c $(OPTIONS) -Ofast -march=native -o $(QWEN_BIN)
 
 .PHONY: clean
 clean:
-	rm -f $(BIN)
+	rm -f $(RUNQ_BIN) $(QWEN_BIN)
