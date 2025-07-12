@@ -461,7 +461,7 @@ float *forward(Transformer *t, int token, int pos) {
     RunState* s = &t->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
-    int all_heads_dim = p->n_heads * p->head_dim;
+    int proj_dim = p->n_heads * p->head_dim;
 
     // copy the token embedding into x
     memcpy(s->x, w->token_embedding_table + token * p->dim, p->dim * sizeof(float));
@@ -482,7 +482,7 @@ float *forward(Transformer *t, int token, int pos) {
         quantize(&s->xq, s->xb, p->dim);
 
         // Compute Q, K, V for this timestep.
-        matmul(s->q, &s->xq, w->wq + l, p->dim, all_heads_dim);
+        matmul(s->q, &s->xq, w->wq + l, p->dim, proj_dim);
         matmul(s->k, &s->xq, w->wk + l, p->dim, kv_dim);
         matmul(s->v, &s->xq, w->wv + l, p->dim, kv_dim);
 
@@ -515,8 +515,8 @@ float *forward(Transformer *t, int token, int pos) {
         attention(p, s, l, pos);
 
         // final matmul to get the output of the attention
-        quantize(&s->xq, s->xb, all_heads_dim);
-        matmul(s->xb, &s->xq, w->wo + l, all_heads_dim, p->dim);
+        quantize(&s->xq, s->xb, proj_dim);
+        matmul(s->xb, &s->xq, w->wo + l, proj_dim, p->dim);
 
         // residual connection back into x
         for (int i = 0; i < p->dim; i++) {
