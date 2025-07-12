@@ -212,19 +212,24 @@ void memory_map_weights(TransformerWeights *w, Config *p, void *ptr) {
 
     w->rms_att_weight = fptr;
     fptr += p->n_layers * p->dim;
+
     w->rms_ffn_weight = fptr;
     fptr += p->n_layers * p->dim;
+
     w->rms_final_weight = fptr;
     fptr += p->dim;
+
     w->q_ln_weights = fptr;
     fptr += p->n_layers * p->head_dim;
+
     w->k_ln_weights = fptr;
     fptr += p->n_layers * p->head_dim;
 
     // now read all the quantized weights
     ptr = (void *)fptr; // now cast the pointer back to void*
+
+    // Token embeddings (quantized + dequantized)
     w->q_tokens = init_quantized_tensors(&ptr, 1, p->vocab_size * p->dim);
-    // dequantize token embedding table
     w->token_embedding_table = malloc(p->vocab_size * p->dim * sizeof(float));
     dequantize(w->q_tokens, w->token_embedding_table, p->vocab_size * p->dim);
 
