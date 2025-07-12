@@ -454,11 +454,11 @@ void swiglu(float* x1, float* x3, int size) {
     }
 }
 
-float *forward(Transformer *transformer, int token, int pos) {
+float *forward(Transformer *t, int token, int pos) {
     // a few convenience variables
-    Config *p = &transformer->config;
-    TransformerWeights* w = &transformer->weights;
-    RunState* s = &transformer->state;
+    Config* p = &t->config;
+    TransformerWeights* w = &t->weights;
+    RunState* s = &t->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
     int all_heads_dim = p->n_heads * p->head_dim;
