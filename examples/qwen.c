@@ -1495,14 +1495,14 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     // encode the (string) prompt into tokens sequence
     int* ids = calloc(prompt_len + 1, sizeof(int)); // +1 for null
     if (!ids) {
-        fprintf(stderr, "[Generate] Failed to allocate memory for input ids.");
+        fprintf(stderr, "[Generate] Error: Failed to allocate memory for input ids.");
         exit(EXIT_FAILURE);
     }
 
     int n_ids = 0;
     tokenizer_encode(tokenizer, prompt, ids, &n_ids);
     if (n_ids < 1) {
-        fprintf(stderr, "Please provide a prompt using -i <string> on the command line.\n");
+        fprintf(stderr, "[Generate] Error: Failed to encode input prompt.\n");
         exit(EXIT_FAILURE);
     }
 
