@@ -74,7 +74,7 @@ void q8_dequantize(Q8Tensor* qt, float* x, int n) {
 
 /* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at
  * *ptr */
-Q8Tensor* init_quantized_tensors(void** buffer, int n, int size) {
+Q8Tensor* q8_tensor_map(void** buffer, int n, int size) {
     void* cursor = *buffer;
     Q8Tensor* qt = malloc(n * sizeof(Q8Tensor));
 
@@ -250,21 +250,21 @@ void memory_map_weights(TransformerWeights* w, Config* p, void* ptr) {
     ptr = (void*) fptr; // now cast the pointer back to void*
 
     // Token embeddings (quantized + dequantized)
-    w->q_tokens = init_quantized_tensors(&ptr, 1, p->vocab_size * p->dim);
+    w->q_tokens = q8_tensor_map(&ptr, 1, p->vocab_size * p->dim);
     w->token_embedding_table = malloc(p->vocab_size * p->dim * sizeof(float));
     q8_dequantize(w->q_tokens, w->token_embedding_table, p->vocab_size * p->dim);
 
-    w->wq = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
-    w->wk = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wv = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
-    w->wo = init_quantized_tensors(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    w->wq = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
+    w->wk = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wv = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_kv_heads * p->head_dim));
+    w->wo = q8_tensor_map(&ptr, p->n_layers, p->dim * (p->n_heads * p->head_dim));
 
-    w->w1 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
-    w->w2 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
-    w->w3 = init_quantized_tensors(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w1 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w2 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
+    w->w3 = q8_tensor_map(&ptr, p->n_layers, p->dim * p->hidden_dim);
 
     w->wcls = p->shared_classifier ? w->q_tokens
-                                   : init_quantized_tensors(&ptr, 1, p->dim * p->vocab_size);
+                                   : q8_tensor_map(&ptr, 1, p->dim * p->vocab_size);
 }
 
 void read_checkpoint(
