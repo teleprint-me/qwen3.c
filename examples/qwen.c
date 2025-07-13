@@ -301,7 +301,9 @@ bool model_read_params(Transformer* t, int override_seq_len) {
     }
 
     GS = t->params.group_size;
-    t->model = ((char*) t->model) + 256; // add alignment to weights
+
+    const int padding = 256;
+    t->model = ((char*) t->model) + padding; // add alignment to weights
 
     fprintf(stderr, "[Params] magic=%s\n", (char*) &t->params.magic);
     fprintf(stderr, "[Params] version=%d\n", t->params.version);
@@ -1349,7 +1351,7 @@ typedef struct {
     int index;
 } ProbIndex; // struct used when sorting probabilities during top-p sampling
 
-typedef struct {
+typedef struct Sampler {
     int vocab_size;
     ProbIndex *probindex; // buffer used in top-p sampling
     float temperature;
@@ -1409,6 +1411,7 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
         }
     }
 
+    // debug
     fprintf(stderr, "[Topp] Filtering threshold cutoff = %.9f\n", cutoff);
 
     qsort(probindex, n0, sizeof(ProbIndex), compare);
@@ -1424,6 +1427,7 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
         }
     }
 
+    // debug
     fprintf(stderr, "[Topp] Filtered %d out of %d tokens\n", n0, n);
     fprintf(stderr, "[Topp] Selected %d tokens after cumulative cut\n", last_idx + 1);
 
@@ -1433,11 +1437,13 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
     for (int i = 0; i <= last_idx; i++) {
         cdf += probindex[i].prob;
         if (r < cdf) {
+            // debug
             fprintf(stderr, "[Topp] Sampled token index: %d\n", probindex[i].index);
             return probindex[i].index;
         }
     }
 
+    // debug
     fprintf(stderr, "[Topp] Fallback to last index: %d\n", probindex[last_idx].index);
     return probindex[last_idx].index; // in case of rounding errors
 }
@@ -1497,6 +1503,7 @@ int sample(Sampler *sampler, float *logits) {
         // apply the temperature to the logits
         for (int q=0; q<sampler->vocab_size; q++) { logits[q] /= sampler->temperature; }
 
+        // debug
         fprintf(stderr, "[Sampler] Dumping top 10 logits (pre-softmax):\n");
         for (int i = 0; i < 10; i++) {
             fprintf(stderr, "  logits[%d] = %f\n", i, logits[i]);
@@ -1505,6 +1512,7 @@ int sample(Sampler *sampler, float *logits) {
         // apply softmax to the logits to get the probabilities for next token
         softmax(logits, sampler->vocab_size);
 
+        // debug
         fprintf(stderr, "[Sampler] Dumping top 10 probabilities (post-softmax):\n");
         for (int i = 0; i < 10; i++) {
             fprintf(stderr, "  probs[%d] = %f\n", i, logits[i]); // logits overwritten by softmax
@@ -1557,13 +1565,15 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     int next = 0; // will store the next token in the sequence
     int token = ids[0]; // kick off with the first token in the prompt
     while (pos < transformer->params.seq_len) {
-        printf("token=%d, pos=%d\n", token, pos);
+        // debug
+        printf("[Generate] token=%d, pos=%d\n", token, pos);
         fflush(stdout);
 
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
+        // debug
         for (int i = 0; i < 10; i++) {
-            printf("logit=%f\n", logits[i]);
+            printf("  logit[%d]=%f\n", i, logits[i]);
             fflush(stdout);
         }
 
