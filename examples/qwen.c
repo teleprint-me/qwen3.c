@@ -10,7 +10,7 @@
  *   - Number of Layers: 0.6B/1.7B -> 28, 4B -> 36
  *   - Number of Attention Heads (GQA): 0.6B/1.7B -> 16 for Q, 4B -> 32 for Q, always 8 for KV
  *   - Context Length: 32768 natively and 131072 tokens with YaRN.
- * 
+ *
  * @ref https://huggingface.co/collections/Qwen/qwen3-67dd247413f0e2e4f653967f
  * @ref https://en.wikipedia.org/wiki/Ship_of_Theseus
  */
@@ -60,8 +60,8 @@ int GS = 2; // global quantization group size
  * @brief A quantized tensor with int8 values and per-group scale factors.
  */
 typedef struct Q8Tensor {
-    float* s;     ///< scaling factors per group
-    int8_t* q;    ///< quantized values
+    float* s; ///< scaling factors per group
+    int8_t* q; ///< quantized values
 } Q8Tensor;
 
 /**
@@ -129,7 +129,9 @@ void q8_dequantize(Q8Tensor* qt, float* x, int n) {
  *   - Only the outer array returned by this function should be freed.
  */
 Q8Tensor* q8_tensor_map(void** buffer, int n, int size) {
-    if (!buffer || n <= 0 || size <= 0) return NULL;
+    if (!buffer || n <= 0 || size <= 0) {
+        return NULL;
+    }
 
     void* cursor = *buffer; // current pos
     Q8Tensor* qt = calloc(n, sizeof(Q8Tensor));
@@ -193,7 +195,7 @@ typedef struct Weights {
     Q8Tensor* w3; // (n_layers, hidden_dim, dim)
 
     // (optional) classifier weights for the logits, on the last layer
-    Q8Tensor *cls;
+    Q8Tensor* cls;
 
     // Token embedding
     Q8Tensor* qe; // quantized embedding (vocab_size, dim)
@@ -205,15 +207,15 @@ typedef struct Weights {
     float* out_rms_norm; // (dim)
 
     // QK-RMSNorm for Qwen3
-    float *q_rms_norm;
-    float *k_rms_norm;
+    float* q_rms_norm;
+    float* k_rms_norm;
 } Weights;
 
 typedef struct ForwardState {
     // Residual stream
     float* x; // Persistent residual (dim)
     float* x_rms_norm; // RMSNorm(x), reused in scores and ffn (n_heads * head_dim)
-    
+
     // Attention workspace
     float* q; // Query (n_heads * head_dim)
     float* k; // Key   (n_kv_heads * head_dim)
@@ -413,28 +415,28 @@ bool model_read_weights(Transformer* t) {
 
     size_t total_bytes =
         // FP32 weights
-        p->n_layers * p->dim * 2 * sizeof(float) +       // att + ffn
-        p->dim * sizeof(float) +                         // out
-        p->n_layers * p->head_dim * 2 * sizeof(float) +  // q and k
+        p->n_layers * p->dim * 2 * sizeof(float) + // att + ffn
+        p->dim * sizeof(float) + // out
+        p->n_layers * p->head_dim * 2 * sizeof(float) + // q and k
 
         // Token Embeddings
-        p->vocab_size * p->dim * sizeof(int8_t) +                      // qe.q
-        (p->vocab_size * p->dim / GS) * sizeof(float) +                // qe.s
-        p->vocab_size * p->dim * sizeof(float) +                       // fe
+        p->vocab_size * p->dim * sizeof(int8_t) + // qe.q
+        (p->vocab_size * p->dim / GS) * sizeof(float) + // qe.s
+        p->vocab_size * p->dim * sizeof(float) + // fe
 
         // Attention weights
-        2 * p->n_layers * p->dim * proj_dim * sizeof(int8_t) +         // wq, wo (q)
-        2 * p->n_layers * (p->dim * proj_dim / GS) * sizeof(float) +   // wq, wo (s)
-        2 * p->n_layers * p->dim * kv_dim * sizeof(int8_t) +           // wk, wv (q)
-        2 * p->n_layers * (p->dim * kv_dim / GS) * sizeof(float) +     // wk, wv (s)
+        2 * p->n_layers * p->dim * proj_dim * sizeof(int8_t) + // wq, wo (q)
+        2 * p->n_layers * (p->dim * proj_dim / GS) * sizeof(float) + // wq, wo (s)
+        2 * p->n_layers * p->dim * kv_dim * sizeof(int8_t) + // wk, wv (q)
+        2 * p->n_layers * (p->dim * kv_dim / GS) * sizeof(float) + // wk, wv (s)
 
         // Feedforward weights
-        3 * p->n_layers * p->dim * hidden_dim * sizeof(int8_t) +       // w1, w2, w3 (q)
-        3 * p->n_layers * (p->dim * hidden_dim / GS) * sizeof(float);  // w1, w2, w3 (s)
+        3 * p->n_layers * p->dim * hidden_dim * sizeof(int8_t) + // w1, w2, w3 (q)
+        3 * p->n_layers * (p->dim * hidden_dim / GS) * sizeof(float); // w1, w2, w3 (s)
 
     if (!p->shared_classifier) {
-        total_bytes += p->dim * p->vocab_size * sizeof(int8_t);        // cls.q
-        total_bytes += (p->dim * p->vocab_size / GS) * sizeof(float);  // cls.s
+        total_bytes += p->dim * p->vocab_size * sizeof(int8_t); // cls.q
+        total_bytes += (p->dim * p->vocab_size / GS) * sizeof(float); // cls.s
     }
 
     fprintf(stderr, "[Weights] Allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
@@ -530,9 +532,8 @@ bool model_create_state(Transformer* t) {
     };
 
     // Check for allocation failures
-    if (!s->x || !s->x_rms_norm || !s->q || !s->scores || !s->logits || !s->k_cache
-        || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
-        || !s->qh.s) {
+    if (!s->x || !s->x_rms_norm || !s->q || !s->scores || !s->logits || !s->k_cache || !s->v_cache
+        || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q || !s->qh.s) {
         fprintf(stderr, "[ForwardState] Allocation failed!\n");
         return false;
     }
@@ -589,7 +590,7 @@ void model_free_state(Transformer* t) {
  * @section Transformer Model
  */
 
- /**
+/**
  * @brief Construct a Transformer model from a memory-mapped checkpoint file.
  *
  * This function encapsulates the entire setup process:
@@ -1140,7 +1141,9 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
         if (fread(&score, sizeof(float), 1, file) != 1) {
             fprintf(stderr, "[Tokenizer] Score read error at index %d\n", i);
             fclose(file);
-            for (int k = 0; k < i; k++) { free(t->tokens[k].entry); }
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
             free(t->tokens);
             free(t);
             return NULL;
@@ -1149,7 +1152,9 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
         if (fread(&length, sizeof(int), 1, file) != 1) {
             fprintf(stderr, "[Tokenizer] Length read error at index %d\n", i);
             fclose(file);
-            for (int k = 0; k < i; k++) { free(t->tokens[k].entry); }
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
             free(t->tokens);
             free(t);
             return NULL;
@@ -1158,9 +1163,13 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
         char* buffer = calloc(length + 1, 1);
         if (!buffer || fread(buffer, 1, length, file) != (size_t) length) {
             fprintf(stderr, "[Tokenizer] Token read error at index %d\n", i);
-            if (buffer) { free(buffer); }
+            if (buffer) {
+                free(buffer);
+            }
             fclose(file);
-            for (int k = 0; k < i; k++) { free(t->tokens[k].entry); }
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
             free(t->tokens);
             free(t);
             return NULL;
@@ -1228,7 +1237,10 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
                 stderr,
                 "[tokenizer_token_to_id] Error: Malformed entry! "
                 "i=%d, tokens=%p, entry=%s, score=%f\n",
-                i, t->tokens[i], t->tokens[i].entry, t->tokens[i].score
+                i,
+                t->tokens[i],
+                t->tokens[i].entry,
+                t->tokens[i].score
             );
             return -1;
         }
@@ -1288,12 +1300,7 @@ static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
         if (id != -1) {
             out[(n_ids)++] = id;
         } else {
-            fprintf(
-                stderr,
-                "Warning: Unknown character `%c` (codepoint %d)\n",
-                token[0],
-                token[0]
-            );
+            fprintf(stderr, "Warning: Unknown character `%c` (codepoint %d)\n", token[0], token[0]);
         }
     }
 
@@ -1376,7 +1383,9 @@ typedef struct Sampler {
 
 Sampler* sampler_create(int vocab_size, float temperature, float top_p, unsigned long long seed) {
     Sampler* s = calloc(1, sizeof(Sampler));
-    if (!s) { return NULL; }
+    if (!s) {
+        return NULL;
+    }
 
     // buffer only used with nucleus sampling; may not need but it's ~small
     s->probs = calloc(vocab_size, sizeof(Probability));
@@ -1412,7 +1421,7 @@ void sampler_free(Sampler* s) {
  * not to be confused with the maxima (calc).
  * this just returns the literal max from the logits.
  */
-int sample_argmax(float *samples, int n) {
+int sample_argmax(float* samples, int n) {
     int max_i = 0;
     float max_p = samples[0];
     for (int i = 1; i < n; i++) {
@@ -1430,14 +1439,15 @@ int sample_argmax(float *samples, int n) {
  * cdf = F_X(x) = P(X \leq x), \textrm{ for all }x \in \mathbb{R}
  * @ref https://www.probabilitycourse.com/chapter3/3_2_1_cdf.php
  */
-int sample_mult(float *samples, int n, float coin) {
+int sample_mult(float* samples, int n, float coin) {
     // sample index from samples (they must sum to 1!)
     // coin is a random number in [0, 1), usually from random_f32()
     float cdf = 0;
     for (int i = 0; i < n; i++) {
         cdf += samples[i];
-        if (coin < cdf)
+        if (coin < cdf) {
             return i;
+        }
     }
     return n - 1; // in case of rounding errors
 }
@@ -1445,11 +1455,15 @@ int sample_mult(float *samples, int n, float coin) {
 /**
  * @ref https://en.cppreference.com/w/c/algorithm/qsort.html
  */
-int sample_compare(const void *a, const void *b) {
-    Probability *n = (Probability *) a;
-    Probability *m = (Probability *) b;
-    if (n->sample > m->sample) return -1;
-    if (n->sample < m->sample) return 1;
+int sample_compare(const void* a, const void* b) {
+    Probability* n = (Probability*) a;
+    Probability* m = (Probability*) b;
+    if (n->sample > m->sample) {
+        return -1;
+    }
+    if (n->sample < m->sample) {
+        return 1;
+    }
     return 0;
 }
 
@@ -1460,7 +1474,7 @@ int sample_compare(const void *a, const void *b) {
  * The Curious Case of Neural Text Degeneration (Nucleus Sampling):
  * @ref https://arxiv.org/abs/1904.09751
  */
-int sample_top_p(float *samples, int n, float top_p, Probability *probs, float coin) {
+int sample_top_p(float* samples, int n, float top_p, Probability* probs, float coin) {
     int nucleus = 0; // probability mass
 
     // Filter sampled nucleus tokens: Crop values with (1 - top_p) / (n - 1)
@@ -1513,7 +1527,7 @@ int sample_top_p(float *samples, int n, float top_p, Probability *probs, float c
  * xorshift rng: generate next step in sequence [0, 2^64).
  * @ref https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
  */
-unsigned int random_u32(unsigned long long *state) {
+unsigned int random_u32(unsigned long long* state) {
     *state ^= *state >> 12;
     *state ^= *state << 25;
     *state ^= *state >> 27;
@@ -1523,21 +1537,23 @@ unsigned int random_u32(unsigned long long *state) {
 /**
  * xorshift rng: normalize rng state [0, 1).
  */
-float random_f32(unsigned long long *state) {
+float random_f32(unsigned long long* state) {
     return (random_u32(state) >> 8) / 16777216.0f;
 }
 
-int sample(Sampler *sampler, float *logits) {
+int sample(Sampler* sampler, float* logits) {
     // greedy argmax sampling: take the token with the highest probability
     if (sampler->temperature == 0) {
         return sample_argmax(logits, sampler->vocab_size);
-    } 
+    }
 
     // sample the token given the logits and some hyperparameters
     int next = 0;
-    
+
     // apply the temperature to the logits
-    for (int q=0; q<sampler->vocab_size; q++) { logits[q] /= sampler->temperature; }
+    for (int q = 0; q < sampler->vocab_size; q++) {
+        logits[q] /= sampler->temperature;
+    }
 
     // debug
     fprintf(stderr, "[Sampler] Dumping top 10 logits (pre-softmax):\n");
@@ -1574,7 +1590,9 @@ int sample(Sampler *sampler, float *logits) {
 void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
     fprintf(stderr, "[Generate] Processing...\n");
 
-    if (!prompt) { prompt = ""; }
+    if (!prompt) {
+        prompt = "";
+    }
     int prompt_len = strlen(prompt);
     if (prompt_len < 1) {
         fprintf(stderr, "[Generate] Error: Missing prompt. Use -i 'string'.\n");
@@ -1638,33 +1656,40 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     free(ids);
 }
 
-void read_stdin(const char *guide, char *buffer, size_t bufsize) {
+void read_stdin(const char* guide, char* buffer, size_t bufsize) {
     // read a line from stdin, up to but not including \n
     printf("%s", guide);
     if (fgets(buffer, bufsize, stdin) != NULL) {
         size_t len = strlen(buffer);
-        if (len > 0 && buffer[len - 1] == '\n')
+        if (len > 0 && buffer[len - 1] == '\n') {
             buffer[len - 1] = '\0'; // strip newline
+        }
     }
 }
 
 // ----------------------------------------------------------------------------
 // chat loop
 
-void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char *cli_user_prompt, char *system_prompt) {
+void chat(
+    Transformer* transformer,
+    Tokenizer* tokenizer,
+    Sampler* sampler,
+    char* cli_user_prompt,
+    char* system_prompt
+) {
     // buffers for reading the system prompt and user prompt from stdin
     char user_prompt[32768];
     char rendered_prompt[32768];
     int num_prompt_tokens = 0;
-    int *prompt_tokens = (int *)malloc(32768 * sizeof(int));
+    int* prompt_tokens = (int*) malloc(32768 * sizeof(int));
     int user_idx;
 
     // start the main loop
     int8_t user_turn = 1; // user starts
-    int next = 0;        // will store the next token in the sequence
-    int token = 0;       // stores the current token to feed into the transformer
+    int next = 0; // will store the next token in the sequence
+    int token = 0; // stores the current token to feed into the transformer
     // int prev_token;
-    int pos = 0;     // position in the sequence
+    int pos = 0; // position in the sequence
 
     while (1) {
         // if context window is exceeded, clear it
@@ -1679,22 +1704,25 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char
             // get the user prompt
             if (cli_user_prompt != NULL) {
                 // user prompt for position 0 was passed in, use it
-                if (pos > 0)
+                if (pos > 0) {
                     break;
+                }
                 strcpy(user_prompt, cli_user_prompt);
             } else {
                 // otherwise get user prompt from stdin
                 read_stdin("\n> ", user_prompt, sizeof(user_prompt));
                 // terminate if user enters a blank prompt
-                if (!user_prompt[0])
+                if (!user_prompt[0]) {
                     break;
+                }
             }
 
             // render user/system prompts into the Qwen3 prompt template schema
-            if (pos == 0 && system_prompt)
+            if (pos == 0 && system_prompt) {
                 sprintf(rendered_prompt, tokenizer->system->data, system_prompt, user_prompt);
-            else
+            } else {
                 sprintf(rendered_prompt, tokenizer->prompt->data, user_prompt);
+            }
 
             // encode the rendered prompt into tokens
             tokenizer_encode(tokenizer, rendered_prompt, prompt_tokens, &num_prompt_tokens);
@@ -1714,7 +1742,7 @@ void chat(Transformer *transformer, Tokenizer *tokenizer, Sampler *sampler, char
         // printf("|pos=%d token=%d '%s'|\n",pos,token,tokenizer->vocab[token]);
 
         // forward the transformer to get logits for the next token
-        float *logits = forward(transformer, token, pos);
+        float* logits = forward(transformer, token, pos);
         next = sample(sampler, logits);
         pos++;
 
@@ -1751,55 +1779,86 @@ void error_usage() {
     exit(EXIT_FAILURE);
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     // default parameters
-    char *checkpoint_path = NULL;  // e.g. out/model.bin
-    float temperature = 1.0f;   // 0 = greedy deterministic. 1.0 = original. don't set higher
-    float top_p = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-    char *prompt = NULL;        // prompt string
+    char* checkpoint_path = NULL; // e.g. out/model.bin
+    float temperature = 1.0f; // 0 = greedy deterministic. 1.0 = original. don't set higher
+    float top_p = 0.9f; // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
+    char* prompt = NULL; // prompt string
     unsigned long long seed = 0; // seed rng with time by default
-    char *mode = "chat";        // generate|chat
-    char *system_prompt = NULL; // the (optional) system prompt to use in chat mode
-    int enable_thinking = 0;    // 1 enables thinking
-    int ctx_length = 0;         // context length
+    char* mode = "chat"; // generate|chat
+    char* system_prompt = NULL; // the (optional) system prompt to use in chat mode
+    int enable_thinking = 0; // 1 enables thinking
+    int ctx_length = 0; // context length
 
     // poor man's C argparse so we can override the defaults above from the command line
-    if (argc >= 2) { checkpoint_path = argv[1]; } else { error_usage(); }
-    for (int i = 2; i < argc; i+=2) {
+    if (argc >= 2) {
+        checkpoint_path = argv[1];
+    } else {
+        error_usage();
+    }
+    for (int i = 2; i < argc; i += 2) {
         // do some basic validation
-        if (i + 1 >= argc) { error_usage(); } // must have arg after flag
-        if (argv[i][0] != '-') { error_usage(); } // must start with dash
-        if (strlen(argv[i]) != 2) { error_usage(); } // must be -x (one dash, one letter)
+        if (i + 1 >= argc) {
+            error_usage();
+        } // must have arg after flag
+        if (argv[i][0] != '-') {
+            error_usage();
+        } // must start with dash
+        if (strlen(argv[i]) != 2) {
+            error_usage();
+        } // must be -x (one dash, one letter)
         // read in the args
-        if (argv[i][1] == 't') { temperature = atof(argv[i + 1]); }
-        else if (argv[i][1] == 'p') { top_p = atof(argv[i + 1]); }
-        else if (argv[i][1] == 's') { seed = atoi(argv[i + 1]); }
-        else if (argv[i][1] == 'c') { ctx_length = atoi(argv[i + 1]); }
-        else if (argv[i][1] == 'i') { prompt = argv[i + 1]; }
-        else if (argv[i][1] == 'm') { mode = argv[i + 1]; }
-        else if (argv[i][1] == 'y') { system_prompt = argv[i + 1]; }
-        else if (argv[i][1] == 'r') { enable_thinking = atoi(argv[i + 1]); }
-        else { error_usage(); }
+        if (argv[i][1] == 't') {
+            temperature = atof(argv[i + 1]);
+        } else if (argv[i][1] == 'p') {
+            top_p = atof(argv[i + 1]);
+        } else if (argv[i][1] == 's') {
+            seed = atoi(argv[i + 1]);
+        } else if (argv[i][1] == 'c') {
+            ctx_length = atoi(argv[i + 1]);
+        } else if (argv[i][1] == 'i') {
+            prompt = argv[i + 1];
+        } else if (argv[i][1] == 'm') {
+            mode = argv[i + 1];
+        } else if (argv[i][1] == 'y') {
+            system_prompt = argv[i + 1];
+        } else if (argv[i][1] == 'r') {
+            enable_thinking = atoi(argv[i + 1]);
+        } else {
+            error_usage();
+        }
     }
 
     // parameter validation/overrides
-    if (seed <= 0) seed = (unsigned int)time(NULL);
-    if (temperature < 0) temperature = 0;
-    if (top_p < 0.0f || 1.0f < top_p) top_p = 0.9f;
+    if (seed <= 0) {
+        seed = (unsigned int) time(NULL);
+    }
+    if (temperature < 0) {
+        temperature = 0;
+    }
+    if (top_p < 0.0f || 1.0f < top_p) {
+        top_p = 0.9f;
+    }
 
     // build the Transformer via the model .bin file
     Transformer* transformer = transformer_create(checkpoint_path, ctx_length);
-    if (!transformer) return EXIT_FAILURE;
+    if (!transformer) {
+        return EXIT_FAILURE;
+    }
 
     // build the Tokenizer via the tokenizer .bin file
     Tokenizer* tokenizer = tokenizer_create(checkpoint_path, enable_thinking);
-    if (!tokenizer) return EXIT_FAILURE;
+    if (!tokenizer) {
+        return EXIT_FAILURE;
+    }
 
     if (transformer->params.vocab_size != tokenizer->vocab_size) {
         fprintf(
             stderr,
             "[Error] Vocab size mismatch! transformer=%d, tokenizer=%d\n",
-            transformer->params.vocab_size, tokenizer->vocab_size
+            transformer->params.vocab_size,
+            tokenizer->vocab_size
         );
         tokenizer_free(tokenizer);
         transformer_free(transformer);
@@ -1808,7 +1867,9 @@ int main(int argc, char *argv[]) {
 
     // build the Sampler
     Sampler* sampler = sampler_create(transformer->params.vocab_size, temperature, top_p, seed);
-    if(!sampler) return EXIT_FAILURE;
+    if (!sampler) {
+        return EXIT_FAILURE;
+    }
 
     // run!
     if (strcmp(mode, "generate") == 0) {
