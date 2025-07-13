@@ -5,6 +5,7 @@ model/
 # files
 .clang-format
 qwen
+runq
 
 #
 # C ignore rules
