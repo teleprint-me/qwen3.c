@@ -26,7 +26,7 @@ release: $(QWEN_SRC)
 	$(CC) $(QWEN_SRC) $(OPTIONS) -O3 -o $(QWEN_BIN)
 
 .PHONY: optimized
-openmp: $(QWEN_SRC)
+optimized: $(QWEN_SRC)
 	$(CC) $(QWEN_SRC) $(OPTIONS) -Ofast -march=native -o $(QWEN_BIN)
 
 .PHONY: runq
