@@ -486,13 +486,12 @@ bool model_create_state(Transformer* t) {
         return false;
     }
 
-    const int hidden_dim = p->hidden_dim;
     const int proj_dim = p->n_heads * p->head_dim; // IO Features
     const int kv_dim = p->n_kv_heads * p->head_dim;
     const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
 
     assert(0 == proj_dim % GS && "proj_dim must be divisible by GS");
-    assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
+    assert(0 == p->hidden_dim % GS && "hidden_dim must be divisible by GS");
     assert(0 != cache_len && "cache_len must be greater than 0");
 
     // Residual stream and attention output
@@ -511,16 +510,20 @@ bool model_create_state(Transformer* t) {
     s->v_cache = calloc(cache_len, sizeof(float));
 
     // MLP
-    s->mlp_in = calloc(hidden_dim, sizeof(float));
-    s->mlp_gate = calloc(hidden_dim, sizeof(float));
+    s->mlp_in = calloc(p->hidden_dim, sizeof(float));
+    s->mlp_gate = calloc(p->hidden_dim, sizeof(float));
 
-    // qx.q stores int8_t quantized values of x_rms_norm (proj_dim dim)
-    s->qx.q = calloc(proj_dim, sizeof(int8_t));
-    // qx.s stores per-group scale factors (proj_dim / GS)
-    s->qx.s = calloc(proj_dim / GS, sizeof(float));
+    s->qx = (Q8Tensor) {
+        // int8_t quantized values of x_rms_norm (proj_dim)
+        .q = calloc(proj_dim, sizeof(int8_t)),
+        // per-group scale factors (proj_dim / GS)
+        .s = calloc(proj_dim / GS, sizeof(float)),
+    };
 
-    s->qh.q = calloc(hidden_dim, sizeof(int8_t));
-    s->qh.s = calloc(hidden_dim / GS, sizeof(float));
+    s->qh = (Q8Tensor) {
+        .q = calloc(p->hidden_dim, sizeof(int8_t)),
+        .s = calloc(p->hidden_dim / GS, sizeof(float)),
+    };
 
     // Check for allocation failures
     if (!s->x || !s->x_rms_norm || !s->q || !s->scores || !s->logits || !s->k_cache
@@ -533,8 +536,8 @@ bool model_create_state(Transformer* t) {
     size_t total_bytes = p->dim * 3 * sizeof(float) + // x, x_rms_norm
                          proj_dim * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_rms_norm, qx.q
                          (proj_dim / GS) * sizeof(float) + // qx.s
-                         hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
-                         (hidden_dim / GS) * sizeof(float) + // qh.s
+                         p->hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
+                         (p->hidden_dim / GS) * sizeof(float) + // qh.s
                          p->n_heads * p->seq_len * sizeof(float) + // scores
                          p->vocab_size * sizeof(float) + // logits
                          2 * cache_len * sizeof(float); // kv_cache
@@ -870,7 +873,6 @@ float* forward(Transformer* t, int token, int pos) {
     ForwardState* s = &t->state;
 
     int kv_dim = p->n_kv_heads * p->head_dim;
-    int hidden_dim = p->hidden_dim;
     int proj_dim = p->n_heads * p->head_dim;
 
     /**
@@ -945,19 +947,19 @@ float* forward(Transformer* t, int token, int pos) {
          * FFN Input Projections (w1 and w3)
          */
         q8_quantize(&s->qx, s->x_rms_norm, p->dim);
-        matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, hidden_dim); // w1(x)
-        matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, hidden_dim); // w3(x)
+        matmul(s->mlp_in, &s->qx, w->w1 + l, p->dim, p->hidden_dim); // w1(x)
+        matmul(s->mlp_gate, &s->qx, w->w3 + l, p->dim, p->hidden_dim); // w3(x)
 
         /**
          * SwiGLU Activation
          */
-        swiglu(s->mlp_in, s->mlp_gate, hidden_dim); // mlp_in = silu(w1) * w3
+        swiglu(s->mlp_in, s->mlp_gate, p->hidden_dim); // mlp_in = silu(w1) * w3
 
         /**
          * FFN Output Projection + Residual Add
          */
-        q8_quantize(&s->qh, s->mlp_in, hidden_dim);
-        matmul(s->x_rms_norm, &s->qh, w->w2 + l, hidden_dim, p->dim);
+        q8_quantize(&s->qh, s->mlp_in, p->hidden_dim);
+        matmul(s->x_rms_norm, &s->qh, w->w2 + l, p->hidden_dim, p->dim);
         for (int i = 0; i < p->dim; i++) {
             s->x[i] += s->x_rms_norm[i]; // Add FFN output into residual stream
         }
@@ -1526,7 +1528,7 @@ int sample(Sampler *sampler, float *logits) {
 // generation loop
 
 void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
-    fprintf(stderr, "[Generate] prompt\n%s", prompt);
+    fprintf(stderr, "[Generate] Processing...\n");
 
     if (!prompt) { prompt = ""; }
     int prompt_len = strlen(prompt);
@@ -1554,8 +1556,15 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     int next = 0; // will store the next token in the sequence
     int token = ids[0]; // kick off with the first token in the prompt
     while (pos < transformer->params.seq_len) {
+        printf("token=%d, pos=%d\n", token, pos);
+        fflush(stdout);
+
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
+        for (int i = 0; i < 10; i++) {
+            printf("logit=%f\n", logits[i]);
+            fflush(stdout);
+        }
 
         // advance the state state machine
         if (pos < n_ids - 1 && pos + 1 < n_ids) {
@@ -1568,8 +1577,8 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
         pos++;
 
         // print the token as string, decode it with the Tokenizer object
-        printf("%s", tokenizer_id_to_token(tokenizer, token));
-        fflush(stdout);
+        // printf("%s", tokenizer_id_to_token(tokenizer, token));
+        // fflush(stdout);
 
         // data-dependent terminating condition: the BOS token delimits sequences
         if (pos >= n_ids && (next == tokenizer->bos_id || next == tokenizer->eos_id)) {
