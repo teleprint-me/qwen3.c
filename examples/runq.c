@@ -97,8 +97,8 @@ Q8Tensor* q8_tensor_map(void** buffer, int n, int size) {
 
 // Transformer model
 
-typedef struct Config {
-    int magic_number; // checkpoint magic number
+typedef struct Params {
+    int magic; // checkpoint magic number
     int version; // file format version
     int dim; // transformer dimension
     int hidden_dim; // for ffn layers
@@ -108,9 +108,9 @@ typedef struct Config {
     int vocab_size; // vocabulary size, usually 256 (byte-level)
     int seq_len; // max sequence length
     int head_dim; // head dimension
-    int shared_classifier; // 1 if wcls == p_tokens
+    int shared_classifier; // 1 if cls == p_tokens
     int group_size; // quantization group size (export.py uses 64)
-} Config;
+} Params;
 
 /// @note Many of these are arrays of pointers, one per layer.
 ///       So memory layout looks like:
@@ -159,14 +159,14 @@ typedef struct RunState {
 } RunState;
 
 typedef struct Transformer {
-    Config config; // the hyperparameters of the architecture (the blueprint)
+    Params params; // the hyperparameters of the architecture (the blueprint)
     TransformerWeights weights; // the weights of the model
     RunState state; // buffers for the "wave" of activations in the forward pass
     float* data; // memory mapped data pointer
     ssize_t file_size; // size of the checkpoint file in bytes
 } Transformer;
 
-void malloc_run_state(RunState* s, Config* p) {
+void malloc_run_state(RunState* s, Params* p) {
     const size_t proj_dim = p->n_heads * p->head_dim; // IO Features
     const size_t kv_dim = p->n_kv_heads * p->head_dim;
     const size_t cache_len = (size_t) p->n_layers * p->seq_len * kv_dim;
@@ -227,7 +227,7 @@ void free_run_state(RunState* s) {
 // ----------------------------------------------------------------------------
 // Quantization functions
 
-void memory_map_weights(TransformerWeights* w, Config* p, void* ptr) {
+void memory_map_weights(TransformerWeights* w, Params* p, void* ptr) {
     // first are the parameters that are kept in fp32 (the rmsnorm (1D) weights)
     float* fptr = (float*) ptr; // cast our pointer to float*
 
@@ -269,7 +269,7 @@ void memory_map_weights(TransformerWeights* w, Config* p, void* ptr) {
 
 void read_checkpoint(
     char* checkpoint,
-    Config* config,
+    Params* params,
     TransformerWeights* weights,
     float** data,
     ssize_t* file_size,
@@ -293,33 +293,33 @@ void read_checkpoint(
 
     // checkpoint format is 256-byte header, and then the model weights
 
-    memcpy(config, *data, sizeof(Config));
-    if (config->magic_number != 0x7177656E) {
+    memcpy(params, *data, sizeof(Params));
+    if (params->magic != 0x7177656E) {
         fprintf(stderr, "File %s is not a qwen3.c checkpoint\n", checkpoint);
         exit(EXIT_FAILURE);
     }
-    if (config->version != 1) {
+    if (params->version != 1) {
         fprintf(
-            stderr, "Checkpoint %s is version %d, need version 1\n", checkpoint, config->version
+            stderr, "Checkpoint %s is version %d, need version 1\n", checkpoint, params->version
         );
         exit(EXIT_FAILURE);
     }
 
-    if (ctx_length != 0 && ctx_length <= config->seq_len) {
-        config->seq_len = ctx_length;
+    if (ctx_length != 0 && ctx_length <= params->seq_len) {
+        params->seq_len = ctx_length;
     }
 
-    GS = config->group_size; // set as global, as it will be used in many places
+    GS = params->group_size; // set as global, as it will be used in many places
 
     void* weights_ptr = ((char*) *data) + 256; // skip the header (256 bytes)
-    memory_map_weights(weights, config, weights_ptr);
+    memory_map_weights(weights, params, weights_ptr);
 }
 
 void build_transformer(Transformer* t, char* checkpoint_path, int ctx_length) {
-    // read in the Config and the Weights from the checkpoint
-    read_checkpoint(checkpoint_path, &t->config, &t->weights, &t->data, &t->file_size, ctx_length);
+    // read in the Params and the Weights from the checkpoint
+    read_checkpoint(checkpoint_path, &t->params, &t->weights, &t->data, &t->file_size, ctx_length);
     // allocate the RunState buffers
-    malloc_run_state(&t->state, &t->config);
+    malloc_run_state(&t->state, &t->params);
 }
 
 void free_transformer(Transformer* t) {
@@ -454,7 +454,7 @@ void swiglu(float* x1, float* x3, int size) {
 }
 
 void attention(Transformer* t, int l, int pos) {
-    Config* p = &t->config;
+    Params* p = &t->params;
     RunState* s = &t->state;
 
     int head_dim = p->head_dim;
@@ -511,7 +511,7 @@ void attention(Transformer* t, int l, int pos) {
 
 float* forward(Transformer* t, int token, int pos) {
     // a few convenience variables
-    Config* p = &t->config;
+    Params* p = &t->params;
     TransformerWeights* w = &t->weights;
     RunState* s = &t->state;
 
@@ -992,7 +992,7 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     int token = prompt_tokens[0]; // kick off with the first token in the prompt
     int pos = 0; // position in the sequence
 
-    while (pos < transformer->config.seq_len) {
+    while (pos < transformer->params.seq_len) {
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
 
@@ -1058,7 +1058,7 @@ void chat(
 
     while (1) {
         // if context window is exceeded, clear it
-        if (pos >= transformer->config.seq_len) {
+        if (pos >= transformer->params.seq_len) {
             printf("\n(context window full, clearing)\n");
             user_turn = 1;
             pos = 0;
@@ -1218,23 +1218,23 @@ int main(int argc, char* argv[]) {
 
     // build the Sampler
     Sampler sampler;
-    build_sampler(&sampler, transformer.config.vocab_size, temperature, topp, rng_seed);
+    build_sampler(&sampler, transformer.params.vocab_size, temperature, topp, rng_seed);
 
     if (!prompt) {
         printf(
             "hidden_size=%d, intermediate_size=%d, num_hidden_layers=%d, num_attention_heads=%d, "
             "num_kv_heads=%d, head_dim=%d, ctx_length=%d, vocab_size=%d, shared_classifier=%d, "
             "quantization_block_size=%d\n",
-            transformer.config.dim,
-            transformer.config.hidden_dim,
-            transformer.config.n_layers,
-            transformer.config.n_heads,
-            transformer.config.n_kv_heads,
-            transformer.config.head_dim,
-            transformer.config.seq_len,
-            transformer.config.vocab_size,
-            transformer.config.shared_classifier,
-            transformer.config.group_size
+            transformer.params.dim,
+            transformer.params.hidden_dim,
+            transformer.params.n_layers,
+            transformer.params.n_heads,
+            transformer.params.n_kv_heads,
+            transformer.params.head_dim,
+            transformer.params.seq_len,
+            transformer.params.vocab_size,
+            transformer.params.shared_classifier,
+            transformer.params.group_size
         );
     }
 
