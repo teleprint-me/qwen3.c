@@ -380,6 +380,27 @@ void rotary(float* t, int head_dim, int pos) {
     }
 }
 
+/// @brief σ(x) = 1 / 1 + exp(-x)
+/// @note This can not be modified. The model will become incoherent.
+float sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+/// @brief x∗σ(x), where σ(x) is the logistic sigmoid.
+float silu(float x) {
+    return x * sigmoid(x);
+}
+
+/// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
+/// @note Modifying this math will corrupt model behavior.
+///       Make sure SiLU and element-wise multiplication are preserved.
+void swiglu(float* x1, float* x3, int size) {
+#pragma omp parallel for
+    for (int i = 0; i < size; i++) {
+        x1[i] = silu(x1[i]) * x3[i];
+    }
+}
+
 void attention(Transformer* t, int l, int pos) {
     Config* p = &t->config;
     RunState* s = &t->state;
@@ -436,28 +457,7 @@ void attention(Transformer* t, int l, int pos) {
     }
 }
 
-/// @brief σ(x) = 1 / 1 + exp(-x)
-/// @note This can not be modified. The model will become incoherent.
-float sigmoid(float x) {
-    return 1.0f / (1.0f + expf(-x));
-}
-
-/// @brief x∗σ(x), where σ(x) is the logistic sigmoid.
-float silu(float x) {
-    return x * sigmoid(x);
-}
-
-/// @brief SwiGLU(x) = silu(W₁x) ⊙ W₃x
-/// @note Modifying this math will corrupt model behavior.
-///       Make sure SiLU and element-wise multiplication are preserved.
-void swiglu(float* x1, float* x3, int size) {
-#pragma omp parallel for
-    for (int i = 0; i < size; i++) {
-        x1[i] = silu(x1[i]) * x3[i];
-    }
-}
-
-float *forward(Transformer *t, int token, int pos) {
+float* forward(Transformer* t, int token, int pos) {
     // a few convenience variables
     Config* p = &t->config;
     TransformerWeights* w = &t->weights;
