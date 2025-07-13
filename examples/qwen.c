@@ -301,6 +301,7 @@ bool model_read_params(Transformer* t, int override_seq_len) {
     }
 
     GS = t->params.group_size;
+    t->model = ((char*) t->model) + 256; // add alignment to weights
 
     fprintf(stderr, "[Params] magic=%s\n", (char*) &t->params.magic);
     fprintf(stderr, "[Params] version=%d\n", t->params.version);
