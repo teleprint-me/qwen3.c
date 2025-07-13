@@ -174,6 +174,8 @@ void malloc_run_state(RunState* s, Config* p) {
 
     // Attention workspace
     s->q = calloc(proj_dim, sizeof(float));
+    s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
+    s->v = NULL; // They point to the current time step within layer 'l'
     s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
 
