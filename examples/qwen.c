@@ -705,6 +705,11 @@ void softmax(float* x, int size) {
     // find max value (for numerical stability)
     float max_val = x[0]; // use first element as initial guess
     for (int i = 1; i < size; i++) {
+        // debug
+        if (isnan(x[i]) || isinf(x[i])) {
+            fprintf(stderr, "[Softmax] ⚠️  Invalid input: x[%d] = %f\n", i, x[i]);
+        }
+
         if (x[i] > max_val) {
             max_val = x[i];
         }
@@ -714,9 +719,17 @@ void softmax(float* x, int size) {
     float sum = 0.0f;
 #pragma omp parallel for reduction(+ : sum)
     for (int i = 0; i < size; i++) {
+        // debug
+        float exp_val = expf(x[i] - max_val);
+        if (isnan(exp_val) || isinf(exp_val)) {
+            fprintf(stderr, "[Softmax] NaN/Inf at i=%d: x=%f max_val=%f\n", i, x[i], max_val);
+        }
         x[i] = expf(x[i] - max_val);
         sum += x[i];
     }
+
+    // debug
+    fprintf(stderr, "[Softmax] sum=%.9f\n", sum);
 
 // normalize
 #pragma omp parallel for
@@ -1359,6 +1372,39 @@ typedef struct Sampler {
     unsigned long long rng_state;
 } Sampler;
 
+Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned long long rng_seed) {
+    Sampler* s = calloc(1, sizeof(Sampler));
+    if (!s) { return NULL; }
+
+    // buffer only used with nucleus sampling; may not need but it's ~small
+    s->probindex = calloc(vocab_size, sizeof(ProbIndex));
+    if (!s->probindex) {
+        free(s);
+        return NULL;
+    }
+
+    s->vocab_size = vocab_size;
+    s->temperature = temperature;
+    s->topp = topp;
+    s->rng_state = rng_seed;
+
+    fprintf(stderr, "[Sampler] vocab_size=%d\n", s->vocab_size);
+    fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
+    fprintf(stderr, "[Sampler] top_p=%f\n", s->topp);
+    fprintf(stderr, "[Sampler] seed=%lu\n", s->rng_state);
+
+    return s;
+}
+
+void sampler_free(Sampler* s) {
+    if (s) {
+        if (s->probindex) {
+            free(s->probindex);
+        }
+        free(s);
+    }
+}
+
 int sample_argmax(float *probabilities, int n) {
     // return the index that has the highest probability
     int max_i = 0;
@@ -1446,39 +1492,6 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
     // debug
     fprintf(stderr, "[Topp] Fallback to last index: %d\n", probindex[last_idx].index);
     return probindex[last_idx].index; // in case of rounding errors
-}
-
-Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned long long rng_seed) {
-    Sampler* s = calloc(1, sizeof(Sampler));
-    if (!s) { return NULL; }
-
-    // buffer only used with nucleus sampling; may not need but it's ~small
-    s->probindex = calloc(vocab_size, sizeof(ProbIndex));
-    if (!s->probindex) {
-        free(s);
-        return NULL;
-    }
-
-    s->vocab_size = vocab_size;
-    s->temperature = temperature;
-    s->topp = topp;
-    s->rng_state = rng_seed;
-
-    fprintf(stderr, "[Sampler] vocab_size=%d\n", s->vocab_size);
-    fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
-    fprintf(stderr, "[Sampler] top_p=%f\n", s->topp);
-    fprintf(stderr, "[Sampler] seed=%lu\n", s->rng_state);
-
-    return s;
-}
-
-void sampler_free(Sampler* s) {
-    if (s) {
-        if (s->probindex) {
-            free(s->probindex);
-        }
-        free(s);
-    }
 }
 
 unsigned int random_u32(unsigned long long *state) {
@@ -1588,8 +1601,8 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
         pos++;
 
         // print the token as string, decode it with the Tokenizer object
-        // printf("%s", tokenizer_id_to_token(tokenizer, token));
-        // fflush(stdout);
+        printf("[Generate] token='%s'\n", tokenizer_id_to_token(tokenizer, token));
+        fflush(stdout);
 
         // data-dependent terminating condition: the BOS token delimits sequences
         if (pos >= n_ids && (next == tokenizer->bos_id || next == tokenizer->eos_id)) {
