@@ -164,23 +164,36 @@ typedef struct Transformer {
 } Transformer;
 
 void malloc_run_state(RunState* s, Config* p) {
-    // we calloc instead of malloc to keep valgrind happy
-    int all_heads_dim = p->n_heads * p->head_dim;
-    int kv_dim = p->n_kv_heads * p->head_dim;
+    const size_t proj_dim = p->n_heads * p->head_dim; // IO Features
+    const size_t kv_dim = p->n_kv_heads * p->head_dim;
+    const size_t cache_len = (size_t) p->n_layers * p->seq_len * kv_dim;
 
-    s->x = calloc(p->dim, sizeof(float));
-    s->xb = calloc(all_heads_dim, sizeof(float));
-    s->hb = calloc(p->hidden_dim, sizeof(float));
-    s->hb2 = calloc(p->hidden_dim, sizeof(float));
-    s->xq = (QuantizedTensor) {.q = calloc(all_heads_dim, sizeof(int8_t)),
-                               .s = calloc(all_heads_dim / GS, sizeof(float))};
-    s->hq = (QuantizedTensor) {.q = calloc(p->hidden_dim, sizeof(int8_t)),
-                               .s = calloc(p->hidden_dim / GS, sizeof(float))};
-    s->q = calloc(all_heads_dim, sizeof(float));
+    // Residual stream and attention output
+    s->x = calloc(p->dim, sizeof(float)); // persistent
+    s->xb = calloc(proj_dim, sizeof(float)); // scratch for norm/project
+
+    // Attention workspace
+    s->q = calloc(proj_dim, sizeof(float));
     s->att = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
-    s->key_cache = calloc(p->n_layers * (uint64_t) p->seq_len * kv_dim, sizeof(float));
-    s->value_cache = calloc(p->n_layers * (uint64_t) p->seq_len * kv_dim, sizeof(float));
+
+    // Key/value memory (shared memory with KV)
+    s->key_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(float));
+    s->value_cache = calloc(p->n_layers * p->seq_len * kv_dim, sizeof(float));
+
+    // MLP
+    s->hb = calloc(p->hidden_dim, sizeof(float)); // in = w1(x)
+    s->hb2 = calloc(p->hidden_dim, sizeof(float)); // gate = w3(x)
+ 
+    s->xq = (QuantizedTensor) {
+        .q = calloc(proj_dim, sizeof(int8_t)),
+        .s = calloc(proj_dim / GS, sizeof(float))
+    };
+
+    s->hq = (QuantizedTensor) {
+        .q = calloc(p->hidden_dim, sizeof(int8_t)),
+        .s = calloc(p->hidden_dim / GS, sizeof(float))
+    };
 
     // ensure all mallocs went fine
     if (!s->x || !s->xb || !s->hb || !s->hb2 || !s->q || !s->att || !s->logits || !s->key_cache
