@@ -1453,7 +1453,7 @@ Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned 
     if (!s) { return NULL; }
 
     // buffer only used with nucleus sampling; may not need but it's ~small
-    s->probindex = calloc(s->vocab_size, sizeof(ProbIndex));
+    s->probindex = calloc(vocab_size, sizeof(ProbIndex));
     if (!s->probindex) {
         free(s);
         return NULL;
