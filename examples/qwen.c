@@ -1359,71 +1359,72 @@ void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
 // The Sampler, which takes logits and returns a sampled token
 // sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
 
-typedef struct {
-    float prob;
+// struct used when sorting probabilities during top-p sampling
+typedef struct Probability {
+    float sample;
     int index;
-} ProbIndex; // struct used when sorting probabilities during top-p sampling
+} Probability;
 
 typedef struct Sampler {
-    int vocab_size;
-    ProbIndex *probindex; // buffer used in top-p sampling
-    float temperature;
-    float topp;
-    unsigned long long rng_state;
+    Probability* probs; // buffer used in top-p sampling
+    unsigned long long seed; // current rng state
+    float temperature; // entropy scale
+    float top_p; // top probability
+    int vocab_size; // embed dim
 } Sampler;
 
-Sampler* sampler_create(int vocab_size, float temperature, float topp, unsigned long long rng_seed) {
+Sampler* sampler_create(int vocab_size, float temperature, float top_p, unsigned long long seed) {
     Sampler* s = calloc(1, sizeof(Sampler));
     if (!s) { return NULL; }
 
     // buffer only used with nucleus sampling; may not need but it's ~small
-    s->probindex = calloc(vocab_size, sizeof(ProbIndex));
-    if (!s->probindex) {
+    s->probs = calloc(vocab_size, sizeof(Probability));
+    if (!s->probs) {
         free(s);
         return NULL;
     }
 
     s->vocab_size = vocab_size;
     s->temperature = temperature;
-    s->topp = topp;
-    s->rng_state = rng_seed;
+    s->top_p = top_p;
+    s->seed = seed;
 
     fprintf(stderr, "[Sampler] vocab_size=%d\n", s->vocab_size);
     fprintf(stderr, "[Sampler] temperature=%f\n", s->temperature);
-    fprintf(stderr, "[Sampler] top_p=%f\n", s->topp);
-    fprintf(stderr, "[Sampler] seed=%lu\n", s->rng_state);
+    fprintf(stderr, "[Sampler] top_p=%f\n", s->top_p);
+    fprintf(stderr, "[Sampler] seed=%lu\n", s->seed);
 
     return s;
 }
 
 void sampler_free(Sampler* s) {
     if (s) {
-        if (s->probindex) {
-            free(s->probindex);
+        if (s->probs) {
+            free(s->probs);
         }
         free(s);
     }
 }
 
-int sample_argmax(float *probabilities, int n) {
+int sample_argmax(float *samples, int n) {
     // return the index that has the highest probability
     int max_i = 0;
-    float max_p = probabilities[0];
+    float max_p = samples[0];
     for (int i = 1; i < n; i++) {
-        if (probabilities[i] > max_p) {
+        if (samples[i] > max_p) {
             max_i = i;
-            max_p = probabilities[i];
+            max_p = samples[i];
         }
     }
     return max_i;
 }
 
-int sample_mult(float *probabilities, int n, float coin) {
-    // sample index from probabilities (they must sum to 1!)
+int sample_mult(float *samples, int n, float coin) {
+    // sample index from samples (they must sum to 1!)
     // coin is a random number in [0, 1), usually from random_f32()
     float cdf = 0;
     for (int i = 0; i < n; i++) {
-        cdf += probabilities[i];
+        cdf += samples[i];
         if (coin < cdf)
             return i;
     }
@@ -1431,28 +1432,28 @@ int sample_mult(float *probabilities, int n, float coin) {
 }
 
 int compare(const void *a, const void *b) {
-    ProbIndex *a_ = (ProbIndex *) a;
-    ProbIndex *b_ = (ProbIndex *) b;
-    if (a_->prob > b_->prob) return -1;
-    if (a_->prob < b_->prob) return 1;
+    Probability *n = (Probability *) a;
+    Probability *m = (Probability *) b;
+    if (n->sample > m->sample) return -1;
+    if (n->sample < m->sample) return 1;
     return 0;
 }
 
-int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, float coin) {
+int sample_top_p(float *samples, int n, float top_p, Probability *probs, float coin) {
     // top-p sampling (or "nucleus sampling") samples from the smallest set of
-    // tokens that exceed probability topp. This way we never sample tokens that
-    // have very low probabilities and are less likely to go "off the rails".
+    // tokens that exceed probability top_p. This way we never sample tokens that
+    // have very low samples and are less likely to go "off the rails".
     // coin is a random number in [0, 1), usually from random_f32()
 
     int n0 = 0;
-    // quicksort indices in descending order of probabilities
-    // values smaller than (1 - topp) / (n - 1) cannot be part of the result
+    // quicksort indices in descending order of samples
+    // values smaller than (1 - top_p) / (n - 1) cannot be part of the result
     // so for efficiency we crop these out as candidates before sorting
-    const float cutoff = (1.0f - topp) / (n - 1);
+    const float cutoff = (1.0f - top_p) / (n - 1);
     for (int i = 0; i < n; i++) {
-        if (probabilities[i] >= cutoff) {
-            probindex[n0].index = i;
-            probindex[n0].prob = probabilities[i];
+        if (samples[i] >= cutoff) {
+            probs[n0].index = i;
+            probs[n0].sample = samples[i];
             n0++;
         }
     }
@@ -1460,16 +1461,16 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
     // debug
     fprintf(stderr, "[Topp] Filtering threshold cutoff = %.9f\n", cutoff);
 
-    qsort(probindex, n0, sizeof(ProbIndex), compare);
+    qsort(probs, n0, sizeof(Probability), compare);
 
-    // truncate the list where cumulative probability exceeds topp
+    // truncate the list where cumulative probability exceeds top_p
     float cumulative_prob = 0;
     int last_idx = n0 - 1; // in case of rounding errors consider all elements
     for (int i = 0; i < n0; i++) {
-        cumulative_prob += probindex[i].prob;
-        if (cumulative_prob > topp) {
+        cumulative_prob += probs[i].sample;
+        if (cumulative_prob > top_p) {
             last_idx = i;
-            break; // we've exceeded topp by including last_idx
+            break; // we've exceeded top_p by including last_idx
         }
     }
 
@@ -1481,17 +1482,17 @@ int sample_topp(float *probabilities, int n, float topp, ProbIndex *probindex, f
     float r = coin * cumulative_prob;
     float cdf = 0;
     for (int i = 0; i <= last_idx; i++) {
-        cdf += probindex[i].prob;
+        cdf += probs[i].sample;
         if (r < cdf) {
             // debug
-            fprintf(stderr, "[Topp] Sampled token index: %d\n", probindex[i].index);
-            return probindex[i].index;
+            fprintf(stderr, "[Topp] Sampled token index: %d\n", probs[i].index);
+            return probs[i].index;
         }
     }
 
     // debug
-    fprintf(stderr, "[Topp] Fallback to last index: %d\n", probindex[last_idx].index);
-    return probindex[last_idx].index; // in case of rounding errors
+    fprintf(stderr, "[Topp] Fallback to last index: %d\n", probs[last_idx].index);
+    return probs[last_idx].index; // in case of rounding errors
 }
 
 unsigned int random_u32(unsigned long long *state) {
@@ -1522,7 +1523,7 @@ int sample(Sampler *sampler, float *logits) {
             fprintf(stderr, "  logits[%d] = %f\n", i, logits[i]);
         }
 
-        // apply softmax to the logits to get the probabilities for next token
+        // apply softmax to the logits to get the samples for next token
         softmax(logits, sampler->vocab_size);
 
         // debug
@@ -1532,15 +1533,15 @@ int sample(Sampler *sampler, float *logits) {
         }
 
         // flip a (float) coin (this is our source of entropy for sampling)
-        float coin = random_f32(&sampler->rng_state);
+        float coin = random_f32(&sampler->seed);
 
         // we sample from this distribution to get the next token
-        if (sampler->topp <= 0 || sampler->topp >= 1) {
+        if (sampler->top_p <= 0 || sampler->top_p >= 1) {
             // simply sample from the predicted probability distribution
             next = sample_mult(logits, sampler->vocab_size, coin);
         } else {
             // top-p (nucleus) sampling, clamping the least likely tokens to zero
-            next = sample_topp(logits, sampler->vocab_size, sampler->topp, sampler->probindex, coin);
+            next = sample_top_p(logits, sampler->vocab_size, sampler->top_p, sampler->probs, coin);
         }
     }
     return next;
@@ -1733,9 +1734,9 @@ int main(int argc, char *argv[]) {
     // default parameters
     char *checkpoint_path = NULL;  // e.g. out/model.bin
     float temperature = 1.0f;   // 0 = greedy deterministic. 1.0 = original. don't set higher
-    float topp = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
+    float top_p = 0.9f;          // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
     char *prompt = NULL;        // prompt string
-    unsigned long long rng_seed = 0; // seed rng with time by default
+    unsigned long long seed = 0; // seed rng with time by default
     char *mode = "chat";        // generate|chat
     char *system_prompt = NULL; // the (optional) system prompt to use in chat mode
     int enable_thinking = 0;    // 1 enables thinking
@@ -1750,8 +1751,8 @@ int main(int argc, char *argv[]) {
         if (strlen(argv[i]) != 2) { error_usage(); } // must be -x (one dash, one letter)
         // read in the args
         if (argv[i][1] == 't') { temperature = atof(argv[i + 1]); }
-        else if (argv[i][1] == 'p') { topp = atof(argv[i + 1]); }
-        else if (argv[i][1] == 's') { rng_seed = atoi(argv[i + 1]); }
+        else if (argv[i][1] == 'p') { top_p = atof(argv[i + 1]); }
+        else if (argv[i][1] == 's') { seed = atoi(argv[i + 1]); }
         else if (argv[i][1] == 'c') { ctx_length = atoi(argv[i + 1]); }
         else if (argv[i][1] == 'i') { prompt = argv[i + 1]; }
         else if (argv[i][1] == 'm') { mode = argv[i + 1]; }
@@ -1761,9 +1762,9 @@ int main(int argc, char *argv[]) {
     }
 
     // parameter validation/overrides
-    if (rng_seed <= 0) rng_seed = (unsigned int)time(NULL);
+    if (seed <= 0) seed = (unsigned int)time(NULL);
     if (temperature < 0) temperature = 0;
-    if (topp < 0.0f || 1.0f < topp) topp = 0.9f;
+    if (top_p < 0.0f || 1.0f < top_p) top_p = 0.9f;
 
     // build the Transformer via the model .bin file
     Transformer* transformer = transformer_create(checkpoint_path, ctx_length);
@@ -1785,7 +1786,7 @@ int main(int argc, char *argv[]) {
     }
 
     // build the Sampler
-    Sampler* sampler = sampler_create(transformer->params.vocab_size, temperature, topp, rng_seed);
+    Sampler* sampler = sampler_create(transformer->params.vocab_size, temperature, top_p, seed);
     if(!sampler) return EXIT_FAILURE;
 
     // run!
