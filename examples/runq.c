@@ -34,17 +34,17 @@
 int GS = 2; // global quantization group size
 
 typedef struct QuantizedTensor {
-    int8_t* q; // quantized values
-    float* s; // scaling factors
+    float* s; ///< scaling factors per group
+    int8_t* q; ///< quantized values
 } QuantizedTensor;
 
-void quantize(QuantizedTensor* qx, float* x, int n) {
+void quantize(QuantizedTensor* qt, float* x, int n) {
     const int num_groups = n / GS;
     const float Q_MAX = 127.0f;
 
     for (int group = 0; group < num_groups; group++) {
         float* xg = x + group * GS;
-        int8_t* qg = qx->q + group * GS;
+        int8_t* qg = qt->q + group * GS;
 
         // Find max absolute value
         float wmax = fabsf(xg[0]);
@@ -54,7 +54,7 @@ void quantize(QuantizedTensor* qx, float* x, int n) {
         }
 
         float scale = (wmax == 0.0f) ? 1e-6f : (wmax / Q_MAX); // avoid div by 0
-        qx->s[group] = scale;
+        qt->s[group] = scale;
 
 /// @note Clamp to [-127, 127] to avoid int8 overflow on rare large values.
 #pragma omp parallel for
@@ -65,29 +65,32 @@ void quantize(QuantizedTensor* qx, float* x, int n) {
     }
 }
 
-void dequantize(QuantizedTensor* qx, float* x, int n) {
+void dequantize(QuantizedTensor* qt, float* x, int n) {
 #pragma omp parallel for
     for (int i = 0; i < n; i++) {
-        x[i] = qx->q[i] * qx->s[i / GS];
+        x[i] = qt->q[i] * qt->s[i / GS];
     }
 }
 
 /* initialize `n` x quantized tensor (with `size_each` elements), starting from memory pointed at
  * *ptr */
-QuantizedTensor* init_quantized_tensors(void** ptr, int n, int size_each) {
-    void* p = *ptr;
-    QuantizedTensor* res = malloc(n * sizeof(QuantizedTensor));
+QuantizedTensor* init_quantized_tensors(void** buffer, int n, int size) {
+    void* cursor = *buffer;
+    QuantizedTensor* qt = malloc(n * sizeof(QuantizedTensor));
 
+    // Buffer must be read linearly
     for (int i = 0; i < n; i++) {
-        /* map quantized int8 values*/
-        res[i].q = (int8_t*) p;
-        p = (int8_t*) p + size_each;
-        /* map scale factors */
-        res[i].s = (float*) p;
-        p = (float*) p + size_each / GS;
+        // map q8 values
+        qt[i].q = (int8_t*) cursor;
+        cursor = (int8_t*) cursor + size;
+
+        // map scalars
+        qt[i].s = (float*) cursor;
+        cursor = (float*) cursor + size / GS;
     }
-    *ptr = p; // advance ptr to current position
-    return res;
+
+    *buffer = cursor; // advance ptr to current position
+    return qt;
 }
 
 /** @} */
