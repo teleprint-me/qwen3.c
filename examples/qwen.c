@@ -1462,7 +1462,7 @@ int sampler_mass_index(Sampler* s, float* out_mass) {
         const float epsilon = 1e-3f; // absolute threshold
         if (mass < epsilon) {
             for (int i = 0; i <= id; i++) {
-                mass += s->probs[i].sample;
+                mass += s->probs[i].sample; // add weight to the distribution
             }
         }
         *out_mass = mass;
