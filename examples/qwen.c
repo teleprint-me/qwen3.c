@@ -1478,7 +1478,7 @@ int sampler_mass_index(Sampler* s, float* out_mass) {
 int sampler_cdf_index(Probability* dist, int n, float coin, float total_mass) {
     float cdf = 0.0f;
     float r = coin * total_mass;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i <= n; i++) {
         cdf += dist[i].sample;
         if (r < cdf) {
             return dist[i].index;
@@ -1529,7 +1529,7 @@ int sample_top_p(Sampler* s, float* samples, float coin) {
     float mass = 0.0f;
     int id = sampler_mass_index(s, &mass);
     // Sample from truncated distribution
-    return sampler_cdf_index(s->probs, id + 1, coin, mass);
+    return sampler_cdf_index(s->probs, id, coin, mass);
 }
 
 /**
