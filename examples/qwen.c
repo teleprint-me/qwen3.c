@@ -1599,11 +1599,10 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
     }
 
     // Initialize generation state
-    int pos = 0; // absolute position in the sequence
     int token = ids[0]; // first prompt token
     int next = 0;
 
-    while (pos < transformer->params.seq_len) {
+    for (int pos = 0; pos < transformer->params.seq_len; pos++) {
         // Forward pass: get logits for the next token
         float* logits = forward(transformer, token, pos);
 
@@ -1613,14 +1612,13 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
         } else {
             next = sample(sampler, logits); // now generating
         }
-        pos++;
 
         // Output the decoded token
         printf("%s", tokenizer_id_to_token(tokenizer, token));
         fflush(stdout);
 
         // Stop if we hit BOS/EOS after prompt
-        if (pos >= n_ids && (next == tokenizer->bos_id || next == tokenizer->eos_id)) {
+        if (next == tokenizer->bos_id || next == tokenizer->eos_id) {
             break;
         }
 
