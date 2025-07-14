@@ -1668,10 +1668,10 @@ void chat_completion(
     char* system_prompt
 ) {
     // buffers for reading the system prompt and user prompt from stdin
-    char user_prompt[32768];
-    char rendered_prompt[32768];
+    char user_prompt[MAX_SEQ_LEN];
+    char rendered_prompt[MAX_SEQ_LEN];
     int num_prompt_tokens = 0;
-    int* prompt_tokens = (int*) malloc(32768 * sizeof(int));
+    int* prompt_tokens = (int*) malloc(MAX_SEQ_LEN * sizeof(int));
     int user_idx;
 
     // start the main loop
