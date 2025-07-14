@@ -1556,10 +1556,10 @@ int sample_top_p(float* samples, int n, float top_p, Probability* probs, float c
  * @ref https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
  */
 unsigned int random_u32(unsigned long long* state) {
-    *state ^= *state >> 12;
-    *state ^= *state << 25;
-    *state ^= *state >> 27;
-    return (*state * 0x2545F4914F6CDD1Dull) >> 32;
+    *state ^= *state >> 12; // shift right, then flip
+    *state ^= *state << 25; // shift left, then flip
+    *state ^= *state >> 27; // shift right, then flip
+    return (*state * 0x2545F4914F6CDD1Dull) >> 32; // scale, then drop 32-bits
 }
 
 /**
@@ -1575,21 +1575,20 @@ int sample(Sampler* sampler, float* logits) {
         return sample_max_index(logits, sampler->vocab_size);
     }
 
-    // sample the token given the logits and some hyperparameters
-    int next = 0;
-
     // apply the temperature to the logits
+    /// @todo Apply temperature annealing for long seq lengths
     for (int q = 0; q < sampler->vocab_size; q++) {
-        logits[q] /= sampler->temperature;
+        logits[q] /= sampler->temperature; // scale
     }
 
     // apply softmax to the logits to get the samples for next token
-    softmax(logits, sampler->vocab_size);
-
-    // flip a (float) coin (this is our source of entropy for sampling)
-    float coin = random_f32(&sampler->seed);
+    softmax(logits, sampler->vocab_size); // normalize
 
     // we sample from this distribution to get the next token
+    int next = 0; // sample the next token
+    // create a source of entropy for sampling
+    float coin = random_f32(&sampler->seed); // flip a coin
+
     if (sampler->top_p <= 0 || sampler->top_p >= 1) {
         // simply sample from the predicted probability distribution
         next = sample_pmf_index(logits, sampler->vocab_size, coin);
@@ -1597,6 +1596,7 @@ int sample(Sampler* sampler, float* logits) {
         // top-p (nucleus) sampling, clamping the least likely tokens to zero
         next = sample_top_p(logits, sampler->vocab_size, sampler->top_p, sampler->probs, coin);
     }
+
     return next;
 }
 
