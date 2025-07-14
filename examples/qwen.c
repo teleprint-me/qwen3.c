@@ -1458,6 +1458,13 @@ int sampler_mass_index(Sampler* s, float* out_mass) {
     }
 
     if (out_mass) {
+        // Heal the sampled distribution
+        const float epsilon = 1e-3f; // absolute threshold
+        if (mass < epsilon) {
+            for (int i = 0; i <= id; i++) {
+                mass += s->probs[i].sample;
+            }
+        }
         *out_mass = mass;
     }
 
@@ -1559,7 +1566,6 @@ int sample(Sampler* sampler, float* logits) {
 
     // apply softmax to the logits to get the samples for next token
     softmax(logits, sampler->vocab_size); // normalize
-
     // create a source of entropy for sampling
     float coin = random_f32(&sampler->seed); // flip a coin
     // top-p (nucleus) sampling, clamping the least likely tokens to zero
