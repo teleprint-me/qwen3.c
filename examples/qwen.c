@@ -730,9 +730,6 @@ void softmax(float* x, int size) {
         sum += x[i];
     }
 
-    // debug
-    // fprintf(stderr, "[Softmax] sum=%.9f\n", sum);
-
 // normalize
 #pragma omp parallel for
     for (int i = 0; i < size; i++) {
@@ -1611,11 +1608,6 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
     while (pos < transformer->params.seq_len) {
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
-        // debug
-        // for (int i = 0; i < 10; i++) {
-        //     printf("  logit[%d]=%f\n", i, logits[i]);
-        //     fflush(stdout);
-        // }
 
         // advance the state state machine
         if (pos < n_ids - 1 && pos + 1 < n_ids) {
