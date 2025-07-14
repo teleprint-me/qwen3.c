@@ -1519,7 +1519,7 @@ int sampler_cmp_dist(const void* a, const void* b) {
  * @param coin Random float in [0, 1)
  * @return Sampled token index
  */
-int sample_top_p(Sampler* s, float* samples, float coin) {
+int sampler_top_p(Sampler* s, float* samples, float coin) {
     // Build full probability-index mapping
     for (int i = 0; i < s->vocab_size; i++) {
         s->probs[i].index = i;
@@ -1566,7 +1566,7 @@ int sample(Sampler* sampler, float* logits) {
     // create a source of entropy for sampling
     float coin = random_f32(&sampler->seed); // flip a coin
     // top-p (nucleus) sampling, clamping the least likely tokens to zero
-    return sample_top_p(sampler, logits, coin);
+    return sampler_top_p(sampler, logits, coin);
 }
 
 /** @} */
