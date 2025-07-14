@@ -1636,17 +1636,13 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     int next = 0; // will store the next token in the sequence
     int token = ids[0]; // kick off with the first token in the prompt
     while (pos < transformer->params.seq_len) {
-        // debug
-        printf("[Generate] token=%d, pos=%d\n", token, pos);
-        fflush(stdout);
-
         // forward the transformer to get logits for the next token
         float* logits = forward(transformer, token, pos);
         // debug
-        for (int i = 0; i < 10; i++) {
-            printf("  logit[%d]=%f\n", i, logits[i]);
-            fflush(stdout);
-        }
+        // for (int i = 0; i < 10; i++) {
+        //     printf("  logit[%d]=%f\n", i, logits[i]);
+        //     fflush(stdout);
+        // }
 
         // advance the state state machine
         if (pos < n_ids - 1 && pos + 1 < n_ids) {
@@ -1659,7 +1655,7 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
         pos++;
 
         // print the token as string, decode it with the Tokenizer object
-        printf("[Generate] token='%s'\n", tokenizer_id_to_token(tokenizer, token));
+        printf("%s", tokenizer_id_to_token(tokenizer, token));
         fflush(stdout);
 
         // data-dependent terminating condition: the BOS token delimits sequences
