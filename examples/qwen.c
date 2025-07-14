@@ -1574,11 +1574,12 @@ int sample(Sampler* sampler, float* logits) {
 
 /** @} */
 
-// ----------------------------------------------------------------------------
-// generation loop
+/**
+ * Completions
+ */
 
-void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
-    fprintf(stderr, "[Generate] Processing...\n");
+void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
+    fprintf(stderr, "[Completion]\n");
 
     if (!prompt) {
         prompt = "";
@@ -1642,7 +1643,13 @@ void generate(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, 
     free(ids);
 }
 
-void read_stdin(const char* guide, char* buffer, size_t bufsize) {
+/** @} */
+
+/**
+ * @section Chat Completions
+ */
+
+void chat_input(const char* guide, char* buffer, size_t bufsize) {
     // read a line from stdin, up to but not including \n
     printf("%s", guide);
     if (fgets(buffer, bufsize, stdin) != NULL) {
@@ -1653,10 +1660,7 @@ void read_stdin(const char* guide, char* buffer, size_t bufsize) {
     }
 }
 
-// ----------------------------------------------------------------------------
-// chat loop
-
-void chat(
+void chat_completion(
     Transformer* transformer,
     Tokenizer* tokenizer,
     Sampler* sampler,
@@ -1696,7 +1700,7 @@ void chat(
                 strcpy(user_prompt, cli_user_prompt);
             } else {
                 // otherwise get user prompt from stdin
-                read_stdin("\n> ", user_prompt, sizeof(user_prompt));
+                chat_input("\n> ", user_prompt, sizeof(user_prompt));
                 // terminate if user enters a blank prompt
                 if (!user_prompt[0]) {
                     break;
@@ -1747,6 +1751,8 @@ void chat(
     free(prompt_tokens);
 }
 
+/** @} */
+
 // ----------------------------------------------------------------------------
 // CLI
 
@@ -1758,7 +1764,7 @@ void error_usage() {
     fprintf(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1], default 0.9\n");
     fprintf(stderr, "  -s <int>    random seed, default time(NULL)\n");
     fprintf(stderr, "  -c <int>    context window size, 0 (default) = max_seq_len\n");
-    fprintf(stderr, "  -m <string> mode: generate|chat, default: chat\n");
+    fprintf(stderr, "  -m <string> mode: completion|chat, default: chat\n");
     fprintf(stderr, "  -i <string> input prompt\n");
     fprintf(stderr, "  -y <string> system prompt in chat mode, default is none\n");
     fprintf(stderr, "  -r <int>    reasoning mode, 0 (default) = no thinking, 1 = thinking\n");
@@ -1772,7 +1778,7 @@ int main(int argc, char* argv[]) {
     float top_p = 0.9f; // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
     char* prompt = NULL; // prompt string
     unsigned long long seed = 0; // seed rng with time by default
-    char* mode = "chat"; // generate|chat
+    char* mode = "chat"; // completion|chat
     char* system_prompt = NULL; // the (optional) system prompt to use in chat mode
     int enable_thinking = 0; // 1 enables thinking
     int ctx_length = 0; // context length
@@ -1858,10 +1864,10 @@ int main(int argc, char* argv[]) {
     }
 
     // run!
-    if (strcmp(mode, "generate") == 0) {
-        generate(transformer, tokenizer, sampler, prompt);
+    if (strcmp(mode, "completion") == 0) {
+        completion(transformer, tokenizer, sampler, prompt);
     } else if (strcmp(mode, "chat") == 0) {
-        chat(transformer, tokenizer, sampler, prompt, system_prompt);
+        chat_completion(transformer, tokenizer, sampler, prompt, system_prompt);
     } else {
         fprintf(stderr, "Unknown mode: %s\n", mode);
         error_usage();
