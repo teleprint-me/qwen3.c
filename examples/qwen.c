@@ -1363,14 +1363,19 @@ void tokenizer_encode(Tokenizer* t, char* text, int* ids, int* n_ids) {
 
 /** @} */
 
-// ----------------------------------------------------------------------------
-// The Sampler, which takes logits and returns a sampled token
-// sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
+/**
+ * @section Sampler
+ * The Sampler, which takes logits and returns a sampled token
+ * sampling can be done in a few ways: greedy argmax, sampling, top-p sampling
+ * @{
+ */
 
-// struct used when sorting probabilities during top-p sampling
+/**
+ * @brief Probability-Index pair for top-p filtering and sampling.
+ */
 typedef struct Probability {
-    float sample;
-    int index;
+    float sample; // probability mass
+    int index; // token index
 } Probability;
 
 typedef struct Sampler {
@@ -1417,31 +1422,27 @@ void sampler_free(Sampler* s) {
 }
 
 /**
- * return the index that has the highest probability
- * not to be confused with the maxima (calc).
- * this just returns the literal max from the logits.
+ * @brief Return index of the maximum probability (greedy decoding).
+ * Not to be confused with calculus maximas - this is discrete argmax.
  */
-int sample_argmax(float* samples, int n) {
-    int max_i = 0;
-    float max_p = samples[0];
+int sample_max_index(float* samples, int n) {
+    int index = 0;
+    float sample = samples[0];
     for (int i = 1; i < n; i++) {
-        if (samples[i] > max_p) {
-            max_i = i;
-            max_p = samples[i];
+        if (samples[i] > sample) {
+            index = i;
+            sample = samples[i];
         }
     }
-    return max_i;
+    return index;
 }
 
 /**
- * pmf = P_X(x_k) = P(X=x_k), \textrm{ for } k=1,2,3,...
+ * @brief Inverse sampling from full PMF.
+ * Assumes `samples` are normalized (sum to 1).
  * @ref https://www.probabilitycourse.com/chapter3/3_1_3_pmf.php
- * cdf = F_X(x) = P(X \leq x), \textrm{ for all }x \in \mathbb{R}
- * @ref https://www.probabilitycourse.com/chapter3/3_2_1_cdf.php
  */
-int sample_mult(float* samples, int n, float coin) {
-    // sample index from samples (they must sum to 1!)
-    // coin is a random number in [0, 1), usually from random_f32()
+int sample_pmf_index(float* samples, int n, float coin) {
     float cdf = 0;
     for (int i = 0; i < n; i++) {
         cdf += samples[i];
@@ -1449,15 +1450,65 @@ int sample_mult(float* samples, int n, float coin) {
             return i;
         }
     }
-    return n - 1; // in case of rounding errors
+    return n - 1; // fallback for rounding error
 }
 
 /**
+ * @brief Given a sorted Probability array, find smallest prefix
+ * such that cumulative sum exceeds `top_p`.
+ *
+ * @param dist Sorted array (descending)
+ * @param n Number of tokens
+ * @param top_p Nucleus threshold
+ * @param out_mass Optional: returns cumulative mass of included tokens
+ * @return Index of last included token
+ */
+int sample_mass_index(Probability* dist, int n, float top_p, float* out_mass) {
+    float sum = 0.0f;
+    int last = n - 1;
+    for (int i = 0; i < n; i++) {
+        sum += dist[i].sample;
+        if (sum > top_p) {
+            last = i;
+            break;
+        }
+    }
+    if (out_mass) {
+        *out_mass = sum;
+    }
+    return last;
+}
+
+/**
+ * @brief Sample index from a truncated distribution using inverse CDF.
+ *
+ * @ref https://www.probabilitycourse.com/chapter3/3_2_1_cdf.php
+ *
+ * @param dist Array of Probability structs
+ * @param n Number of valid entries
+ * @param coin Random number in [0,1)
+ * @param total_mass Sum of the truncated distribution
+ * @return Sampled index from dist
+ */
+int sample_cdf_index(Probability* dist, int n, float coin, float total_mass) {
+    float cdf = 0.0f;
+    float r = coin * total_mass;
+    for (int i = 0; i < n; i++) {
+        cdf += dist[i].sample;
+        if (r < cdf) {
+            return dist[i].index;
+        }
+    }
+    return dist[n - 1].index; // fallback
+}
+
+/**
+ * @brief Comparator for qsort: descending order by probability
  * @ref https://en.cppreference.com/w/c/algorithm/qsort.html
  */
-int sample_compare(const void* a, const void* b) {
-    Probability* n = (Probability*) a;
-    Probability* m = (Probability*) b;
+int sample_cmp_p(const void* a, const void* b) {
+    const Probability* n = (const Probability*) a;
+    const Probability* m = (const Probability*) b;
     if (n->sample > m->sample) {
         return -1;
     }
@@ -1468,59 +1519,36 @@ int sample_compare(const void* a, const void* b) {
 }
 
 /**
- * Given a distribution P(x \mid x_{1:i-1}), define its top-p
- * vocabulary V(p) \subseteq V as the *smallest* set such that:
- * \sum_{x \in V(p)} P(x \mid x_{1:i-1}) \geq p
- * The Curious Case of Neural Text Degeneration (Nucleus Sampling):
- * @ref https://arxiv.org/abs/1904.09751
+ * @brief Nucleus Sampling (Top-p Sampling).
+ *
+ * Truncates the distribution to the smallest prefix whose cumulative
+ * probability exceeds `top_p`, then samples from this renormalized subset.
+ *
+ * @ref Holtzman et al., 2020 (https://arxiv.org/abs/1904.09751)
+ *
+ * @param samples Input probability distribution (softmaxed logits)
+ * @param n Vocabulary size
+ * @param top_p Nucleus threshold (e.g. 0.9)
+ * @param probs Preallocated buffer of size `n` for temp sorting
+ * @param coin Random float in [0, 1)
+ * @return Sampled token index
  */
 int sample_top_p(float* samples, int n, float top_p, Probability* probs, float coin) {
-    int nucleus = 0; // probability mass
-
-    // Filter sampled nucleus tokens: Crop values with (1 - top_p) / (n - 1)
-    const float cutoff = (1.0f - top_p) / (n - 1);
+    // Build full probability-index mapping
     for (int i = 0; i < n; i++) {
-        if (samples[i] >= cutoff) {
-            probs[nucleus].index = i;
-            probs[nucleus].sample = samples[i];
-            nucleus++;
-        }
+        probs[i].index = i;
+        probs[i].sample = samples[i];
     }
 
-    // debug
-    fprintf(stderr, "[Topp] Filtering threshold cutoff = %.9f\n", cutoff);
+    // Sort descending by probability
+    qsort(probs, n, sizeof(Probability), sample_cmp_p);
 
-    qsort(probs, nucleus, sizeof(Probability), sample_compare);
+    // Truncate where cumulative probability exceeds top_p
+    float cumulative = 0.0f;
+    int last_idx = sample_mass_index(probs, n, top_p, &cumulative);
 
-    // truncate the list where cumulative probability exceeds top_p
-    float sum = 0; // cumulative sum
-    int last_idx = nucleus - 1; // in case of rounding errors consider all elements
-    for (int i = 0; i < nucleus; i++) {
-        sum += probs[i].sample;
-        if (sum > top_p) {
-            last_idx = i;
-            break; // we've exceeded top_p by including last_idx
-        }
-    }
-
-    // debug
-    fprintf(stderr, "[Topp] Filtered %d out of %d tokens\n", nucleus, n);
-    fprintf(stderr, "[Topp] Selected %d tokens after cumulative cut\n", last_idx + 1);
-
-    float cdf = 0; // cumulative distribution function
-    float r = coin * sum; // sample from the truncated list
-    for (int i = 0; i <= last_idx; i++) {
-        cdf += probs[i].sample;
-        if (r < cdf) {
-            // debug
-            fprintf(stderr, "[Topp] Sampled token index: %d\n", probs[i].index);
-            return probs[i].index;
-        }
-    }
-
-    // debug
-    fprintf(stderr, "[Topp] Fallback to last index: %d\n", probs[last_idx].index);
-    return probs[last_idx].index; // in case of rounding errors
+    // Sample from truncated distribution
+    return sample_cdf_index(probs, last_idx + 1, coin, cumulative);
 }
 
 /**
@@ -1544,7 +1572,7 @@ float random_f32(unsigned long long* state) {
 int sample(Sampler* sampler, float* logits) {
     // greedy argmax sampling: take the token with the highest probability
     if (sampler->temperature == 0) {
-        return sample_argmax(logits, sampler->vocab_size);
+        return sample_max_index(logits, sampler->vocab_size);
     }
 
     // sample the token given the logits and some hyperparameters
@@ -1555,20 +1583,8 @@ int sample(Sampler* sampler, float* logits) {
         logits[q] /= sampler->temperature;
     }
 
-    // debug
-    fprintf(stderr, "[Sampler] Dumping top 10 logits (pre-softmax):\n");
-    for (int i = 0; i < 10; i++) {
-        fprintf(stderr, "  logits[%d] = %.9f\n", i, logits[i]);
-    }
-
     // apply softmax to the logits to get the samples for next token
     softmax(logits, sampler->vocab_size);
-
-    // debug
-    fprintf(stderr, "[Sampler] Dumping top 10 probabilities (post-softmax):\n");
-    for (int i = 0; i < 10; i++) {
-        fprintf(stderr, "  probs[%d] = %.9f\n", i, logits[i]); // logits overwritten by softmax
-    }
 
     // flip a (float) coin (this is our source of entropy for sampling)
     float coin = random_f32(&sampler->seed);
@@ -1576,13 +1592,15 @@ int sample(Sampler* sampler, float* logits) {
     // we sample from this distribution to get the next token
     if (sampler->top_p <= 0 || sampler->top_p >= 1) {
         // simply sample from the predicted probability distribution
-        next = sample_mult(logits, sampler->vocab_size, coin);
+        next = sample_pmf_index(logits, sampler->vocab_size, coin);
     } else {
         // top-p (nucleus) sampling, clamping the least likely tokens to zero
         next = sample_top_p(logits, sampler->vocab_size, sampler->top_p, sampler->probs, coin);
     }
     return next;
 }
+
+/** @} */
 
 // ----------------------------------------------------------------------------
 // generation loop
