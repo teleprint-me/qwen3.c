@@ -1659,20 +1659,20 @@ void chat_completion(
     char* cli_user_prompt,
     char* system_prompt
 ) {
-    // buffers for reading the system prompt and user prompt from stdin
-    char user_prompt[MAX_SEQ_LEN];
-    char rendered_prompt[MAX_SEQ_LEN];
-    int num_prompt_tokens = 0;
-    int* prompt_tokens = (int*) malloc(MAX_SEQ_LEN * sizeof(int));
-    int user_idx;
+    fprintf(stderr, "[ChatCompletion]\n");
+
+    char prompt[MAX_SEQ_LEN];
+    char template[MAX_SEQ_LEN];
+
+    int8_t user_turn = 1; // user starts
+    int u_id = 0; // user token id
+    int n_ids = 0; // number of token ids
+    int* ids = (int*) malloc(MAX_SEQ_LEN * sizeof(int)); // array of token ids
 
     // start the main loop
-    int8_t user_turn = 1; // user starts
-    int next = 0; // will store the next token in the sequence
     int token = 0; // stores the current token to feed into the transformer
-    // int prev_token;
+    int next = 0; // will store the next token in the sequence
     int pos = 0; // position in the sequence
-
     while (1) {
         // if context window is exceeded, clear it
         if (pos >= transformer->params.seq_len) {
@@ -1689,33 +1689,33 @@ void chat_completion(
                 if (pos > 0) {
                     break;
                 }
-                strcpy(user_prompt, cli_user_prompt);
+                strcpy(prompt, cli_user_prompt);
             } else {
                 // otherwise get user prompt from stdin
-                chat_input("\n> ", user_prompt, sizeof(user_prompt));
+                chat_input("\n> ", prompt, sizeof(prompt));
                 // terminate if user enters a blank prompt
-                if (!user_prompt[0]) {
+                if (!prompt[0]) {
                     break;
                 }
             }
 
             // render user/system prompts into the Qwen3 prompt template schema
             if (pos == 0 && system_prompt) {
-                sprintf(rendered_prompt, tokenizer->system->data, system_prompt, user_prompt);
+                sprintf(template, tokenizer->system->data, system_prompt, prompt);
             } else {
-                sprintf(rendered_prompt, tokenizer->prompt->data, user_prompt);
+                sprintf(template, tokenizer->prompt->data, prompt);
             }
 
             // encode the rendered prompt into tokens
-            tokenizer_encode(tokenizer, rendered_prompt, prompt_tokens, &num_prompt_tokens);
-            user_idx = 0; // reset the user index
+            tokenizer_encode(tokenizer, template, ids, &n_ids);
+            u_id = 0; // reset the user index
             user_turn = 0;
         }
 
         // determine the token to pass into the transformer next
-        if (user_idx < num_prompt_tokens) {
+        if (u_id < n_ids) {
             // if we are still processing the input prompt, force the next prompt token
-            token = prompt_tokens[user_idx++];
+            token = ids[u_id++];
         } else {
             // otherwise use the next token sampled from previous turn
             token = next;
@@ -1729,7 +1729,7 @@ void chat_completion(
         pos++;
 
         // assistant is responding
-        if (user_idx >= num_prompt_tokens) {
+        if (u_id >= n_ids) {
             if (token == tokenizer->bos_id || token == tokenizer->eos_id) {
                 // EOS token ends the assistant turn
                 printf("\n");
@@ -1740,7 +1740,8 @@ void chat_completion(
             }
         }
     }
-    free(prompt_tokens);
+
+    free(ids);
 }
 
 /** @} */
