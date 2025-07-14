@@ -1578,52 +1578,48 @@ int sample(Sampler* sampler, float* logits) {
 void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
     fprintf(stderr, "[Completion]\n");
 
-    if (!prompt) {
-        prompt = "";
-    }
-    int prompt_len = strlen(prompt);
-    if (prompt_len < 1) {
-        fprintf(stderr, "[Generate] Error: Missing prompt. Use -i 'string'.\n");
+    if (!prompt || strlen(prompt) == 0) {
+        fprintf(stderr, "[Completion] Error: Missing prompt. Use -i 'string'.\n");
         exit(EXIT_FAILURE);
     }
 
-    // encode the (string) prompt into tokens sequence
-    int* ids = calloc(prompt_len + 1, sizeof(int)); // +1 for null
+    // Encode the prompt into token IDs
+    int* ids = calloc(strlen(prompt) + 1, sizeof(int)); // +1 for null terminator
     if (!ids) {
-        fprintf(stderr, "[Generate] Error: Failed to allocate memory for input ids.");
+        fprintf(stderr, "[Completion] Error: Failed to allocate memory for input ids.\n");
         exit(EXIT_FAILURE);
     }
 
     int n_ids = 0;
     tokenizer_encode(tokenizer, prompt, ids, &n_ids);
     if (n_ids < 1) {
-        fprintf(stderr, "[Generate] Error: Failed to encode input prompt.\n");
+        fprintf(stderr, "[Completion] Error: Failed to encode input prompt.\n");
+        free(ids);
         exit(EXIT_FAILURE);
     }
 
-    // start the main loop
-    int pos = 0; // position in the sequence
-    int next = 0; // will store the next token in the sequence
-    int token = ids[0]; // kick off with the first token in the prompt
+    // Initialize generation state
+    int pos = 0; // absolute position in the sequence
+    int token = ids[0]; // first prompt token
+    int next = 0;
+
     while (pos < transformer->params.seq_len) {
-        // forward the transformer to get logits for the next token
+        // Forward pass: get logits for the next token
         float* logits = forward(transformer, token, pos);
 
-        // advance the state state machine
-        if (pos < n_ids - 1 && pos + 1 < n_ids) {
-            // if we are still processing the input prompt, force the next prompt token
-            next = ids[pos + 1];
+        // Decide next token:
+        if (pos + 1 < n_ids) {
+            next = ids[pos + 1]; // still consuming prompt
         } else {
-            // otherwise sample the next token from the logits
-            next = sample(sampler, logits);
+            next = sample(sampler, logits); // now generating
         }
         pos++;
 
-        // print the token as string, decode it with the Tokenizer object
+        // Output the decoded token
         printf("%s", tokenizer_id_to_token(tokenizer, token));
         fflush(stdout);
 
-        // data-dependent terminating condition: the BOS token delimits sequences
+        // Stop if we hit BOS/EOS after prompt
         if (pos >= n_ids && (next == tokenizer->bos_id || next == tokenizer->eos_id)) {
             break;
         }
