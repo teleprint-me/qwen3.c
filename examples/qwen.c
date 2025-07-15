@@ -316,7 +316,7 @@ bool model_read_params(Transformer* t, int override_seq_len) {
     fprintf(stderr, "[Params] num_attention_heads=%d\n", t->params.n_heads);
     fprintf(stderr, "[Params] num_kv_heads=%d\n", t->params.n_kv_heads);
     fprintf(stderr, "[Params] vocab_size=%d\n", t->params.vocab_size);
-    fprintf(stderr, "[Params] ctx_length=%d\n", t->params.seq_len);
+    fprintf(stderr, "[Params] seq_len=%d\n", t->params.seq_len);
     fprintf(stderr, "[Params] head_dim=%d\n", t->params.head_dim);
     fprintf(stderr, "[Params] shared_classifier=%d\n", t->params.shared_classifier);
     fprintf(stderr, "[Params] group_size=%d\n", t->params.group_size); // block size
@@ -1572,7 +1572,181 @@ int sample(Sampler* sampler, float* logits) {
 /** @} */
 
 /**
+ * @section CLI Options
+ */
+
+typedef enum Thinking {
+    THINKING_OFF,
+    THINKING_ON,
+} Thinking;
+
+typedef struct Options {
+    char* prompt; // optional (used in completions)
+    char* system_prompt; // optional (used in chat completions)
+    char* path; // required (e.g., model.bin)
+    char* mode; // "completion" or "chat"
+    unsigned long long seed; // seed rng with time by default
+    Thinking thinking; // 1 enables thinking
+    int seq_len; // max context length
+    float temperature; // 0.0f = deterministic and 1.0f = creative
+    float top_p; // nucleus sampling, 1.0 = off
+} Options;
+
+Options options_init(void) {
+    // set default parameters
+    return (Options) {
+        .prompt = NULL,
+        .system_prompt = NULL,
+        .path = NULL,
+        .mode = "chat",
+        .seed = (unsigned long long) time(NULL),
+        .temperature = 1.0f,
+        .top_p = 0.9f,
+        .thinking = THINKING_OFF,
+        .seq_len = 0,
+    };
+}
+
+static void options_usage(void) {
+    fprintf(stderr, "Usage:   runq <checkpoint> [options]\n");
+    fprintf(stderr, "Example: runq Qwen3-4B.bin -r 1\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -t <float>  temperature in [0,inf], default 1.0\n");
+    fprintf(stderr, "  -p <float>  top-p (nucleus sampling), default 0.9\n");
+    fprintf(stderr, "  -s <int>    random seed, default time(NULL)\n");
+    fprintf(stderr, "  -c <int>    context window size, 0 (default) = max_seq_len\n");
+    fprintf(stderr, "  -m <string> mode: completion|chat, default: chat\n");
+    fprintf(stderr, "  -i <string> input prompt\n");
+    fprintf(stderr, "  -y <string> system prompt (chat mode)\n");
+    fprintf(stderr, "  -r <int>    reasoning mode: 0=off, 1=thinking\n");
+}
+
+int options_parse(Options* o, int argc, char** argv) {
+    if (argc < 2) {
+        options_usage();
+        return 1;
+    }
+
+    o->path = argv[1];
+
+    for (int i = 2; i < argc; i += 2) {
+        if (i + 1 >= argc || argv[i][0] != '-' || strlen(argv[i]) != 2) {
+            options_usage();
+            return -1;
+        }
+        char flag = argv[i][1];
+        char* arg = argv[i + 1];
+
+        switch (flag) {
+            case 't':
+                o->temperature = atof(arg);
+                break;
+            case 'p':
+                o->top_p = atof(arg);
+                break;
+            case 's':
+                {
+                    int seed = abs(atoi(arg));
+                    if (seed) {
+                        o->seed = (unsigned long long) seed;
+                    }
+                }
+                break;
+            case 'c':
+                int seq_len = abs(atoi(arg));
+                o->seq_len = (seq_len > MAX_SEQ_LEN) ? MAX_SEQ_LEN : seq_len;
+                break;
+            case 'i':
+                o->prompt = arg;
+                break;
+            case 'y':
+                o->system_prompt = arg;
+                break;
+            case 'm':
+                {
+                    o->mode = arg;
+                }
+                break;
+            case 'r':
+                o->thinking = atoi(arg) ? THINKING_ON : THINKING_OFF;
+                break;
+            default:
+                options_usage();
+                return 1;
+        }
+    }
+
+    return 0;
+}
+
+/** @} */
+
+/**
+ * @section Transformer Model
+ * @{
+ */
+
+typedef struct Qwen {
+    Transformer* model;
+    Tokenizer* tokenizer;
+    Sampler* sampler;
+} Qwen;
+
+Qwen* qwen_create(Options* o) {
+    Qwen* q = calloc(1, sizeof(Qwen));
+    if (!q) {
+        return NULL;
+    }
+
+    // build the Tokenizer via the tokenizer .bin file
+    q->tokenizer = tokenizer_create(o->path, o->thinking);
+    if (!q->tokenizer) {
+        goto tokenizer_failed;
+    }
+
+    // build the Transformer via the model .bin file
+    q->model = transformer_create(o->path, o->seq_len);
+    if (!q->model) {
+        goto model_failed;
+    }
+
+    // build the Sampler
+    q->sampler = sampler_create(q->model->params.vocab_size, o->temperature, o->top_p, o->seed);
+    if (!q->sampler) {
+        goto sampler_failed;
+    }
+
+    return q;
+
+sampler_failed:
+    transformer_free(q->model);
+model_failed:
+    tokenizer_free(q->tokenizer);
+tokenizer_failed:
+    free(q);
+    return NULL;
+}
+
+void qwen_free(Qwen* q) {
+    if (q) {
+        if (q->model) {
+            transformer_free(q->model);
+        }
+        if (q->tokenizer) {
+            tokenizer_free(q->tokenizer);
+        }
+        if (q->sampler) {
+            sampler_free(q->sampler);
+        }
+        free(q);
+    }
+}
+
+/** @} */
+
+/**
  * @section Completions
+ * @{
  */
 
 /**
@@ -1596,7 +1770,7 @@ int sample(Sampler* sampler, float* logits) {
  * @note Deterministic generation only occurs if temperature ~0
  *       and the RNG seed is fixed.
  */
-void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
+void completion(Qwen* qwen, char* prompt) {
     fprintf(stderr, "[Completion]\n");
 
     // Validate prompt
@@ -1613,7 +1787,7 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
     }
 
     int n_ids = 0;
-    tokenizer_encode(tokenizer, prompt, ids, &n_ids);
+    tokenizer_encode(qwen->tokenizer, prompt, ids, &n_ids);
     if (n_ids < 1) {
         fprintf(stderr, "[Completion] Error: Failed to encode input prompt.\n");
         free(ids);
@@ -1624,23 +1798,23 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
     int token = ids[0]; // first token from prompt
     int next = 0; // next token to be generated
 
-    for (int pos = 0; pos < transformer->params.seq_len; pos++) {
+    for (int pos = 0; pos < qwen->model->params.seq_len; pos++) {
         // Forward pass: compute logits for this position
-        float* logits = forward(transformer, token, pos);
+        float* logits = forward(qwen->model, token, pos);
 
         // Teacher forcing for prompt, sampling for generation
         if (pos + 1 < n_ids) {
             next = ids[pos + 1]; // still consuming prompt
         } else {
-            next = sample(sampler, logits); // now generating
+            next = sample(qwen->sampler, logits); // now generating
         }
 
         // Decode and stream the current token
-        printf("%s", tokenizer_id_to_token(tokenizer, token));
+        printf("%s", tokenizer_id_to_token(qwen->tokenizer, token));
         fflush(stdout);
 
         // Stop if BOS/EOS encountered after prompt
-        if (next == tokenizer->bos_id || next == tokenizer->eos_id) {
+        if (next == qwen->tokenizer->bos_id || next == qwen->tokenizer->eos_id) {
             break;
         }
 
@@ -1656,6 +1830,7 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
 
 /**
  * @section Chat Completions
+ * @{
  */
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
@@ -1668,19 +1843,23 @@ void chat_input(const char* prompt, char* buffer, size_t bufsize) {
     }
 }
 
-void chat_completion(
-    Transformer* transformer,
-    Tokenizer* tokenizer,
-    Sampler* sampler,
-    char* cli_user_prompt,
-    char* system_prompt
-) {
+bool chat_reset(int* user, int* pos) {
+    if (!user || !pos) {
+        return false;
+    }
+    printf("\n[ChatCompletion] Context window full! Resetting turn=%d, pos=%d.\n", *user, *pos);
+    *user = 1;
+    *pos = 0;
+    return true;
+}
+
+void chat_completion(Qwen* qwen, char* system_prompt) {
     fprintf(stderr, "[ChatCompletion]\n");
 
     char prompt[MAX_SEQ_LEN];
     char template[MAX_SEQ_LEN];
 
-    int8_t user_turn = 1; // user starts
+    int user = 1; // user starts
     int u_id = 0; // user token id
     int n_ids = 0; // number of token ids
     int* ids = (int*) malloc(MAX_SEQ_LEN * sizeof(int)); // array of token ids
@@ -1691,41 +1870,30 @@ void chat_completion(
     int pos = 0; // position in the sequence
     while (1) {
         // if context window is exceeded, clear it
-        if (pos >= transformer->params.seq_len) {
-            printf("\n(context window full, clearing)\n");
-            user_turn = 1;
-            pos = 0;
+        if (pos >= qwen->model->params.seq_len) {
+            chat_reset(&user, &pos);
         }
 
         // when it is the user's turn to contribute tokens to the dialog...
-        if (user_turn) {
-            // get the user prompt
-            if (cli_user_prompt != NULL) {
-                // user prompt for position 0 was passed in, use it
-                if (pos > 0) {
-                    break;
-                }
-                strcpy(prompt, cli_user_prompt);
-            } else {
-                // otherwise get user prompt from stdin
-                chat_input("\n> ", prompt, sizeof(prompt));
-                // terminate if user enters a blank prompt
-                if (!prompt[0]) {
-                    break;
-                }
+        if (user) {
+            // get the user prompt from stdin
+            chat_input("\n> ", prompt, sizeof(prompt));
+            // terminate if user enters a blank prompt
+            if (!prompt[0]) {
+                break;
             }
 
             // render user/system prompts into the Qwen3 prompt template schema
             if (pos == 0 && system_prompt) {
-                sprintf(template, tokenizer->system->data, system_prompt, prompt);
+                sprintf(template, qwen->tokenizer->system->data, system_prompt, prompt);
             } else {
-                sprintf(template, tokenizer->prompt->data, prompt);
+                sprintf(template, qwen->tokenizer->prompt->data, prompt);
             }
 
             // encode the rendered prompt into tokens
-            tokenizer_encode(tokenizer, template, ids, &n_ids);
+            tokenizer_encode(qwen->tokenizer, template, ids, &n_ids);
             u_id = 0; // reset the user index
-            user_turn = 0;
+            user = 0;
         }
 
         // determine the token to pass into the transformer next
@@ -1740,18 +1908,18 @@ void chat_completion(
         // printf("|pos=%d token=%d '%s'|\n",pos,token,tokenizer->vocab[token]);
 
         // forward the transformer to get logits for the next token
-        float* logits = forward(transformer, token, pos);
-        next = sample(sampler, logits);
+        float* logits = forward(qwen->model, token, pos);
+        next = sample(qwen->sampler, logits);
         pos++;
 
         // assistant is responding
         if (u_id >= n_ids) {
-            if (token == tokenizer->bos_id || token == tokenizer->eos_id) {
+            if (token == qwen->tokenizer->bos_id || token == qwen->tokenizer->eos_id) {
                 // EOS token ends the assistant turn
                 printf("\n");
-                user_turn = 1;
-            } else if (next != tokenizer->bos_id && next != tokenizer->eos_id) {
-                printf("%s", tokenizer_id_to_token(tokenizer, next));
+                user = 1;
+            } else if (next != qwen->tokenizer->bos_id && next != qwen->tokenizer->eos_id) {
+                printf("%s", tokenizer_id_to_token(qwen->tokenizer, next));
                 fflush(stdout);
             }
         }
@@ -1762,129 +1930,33 @@ void chat_completion(
 
 /** @} */
 
-// ----------------------------------------------------------------------------
-// CLI
-
-void error_usage() {
-    fprintf(stderr, "Usage:   runq <checkpoint> [options]\n");
-    fprintf(stderr, "Example: runq Qwen3-4B.bin -r 1\n");
-    fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -t <float>  temperature in [0,inf], default 1.0\n");
-    fprintf(stderr, "  -p <float>  p value in top-p (nucleus) sampling in [0,1], default 0.9\n");
-    fprintf(stderr, "  -s <int>    random seed, default time(NULL)\n");
-    fprintf(stderr, "  -c <int>    context window size, 0 (default) = max_seq_len\n");
-    fprintf(stderr, "  -m <string> mode: completion|chat, default: chat\n");
-    fprintf(stderr, "  -i <string> input prompt\n");
-    fprintf(stderr, "  -y <string> system prompt in chat mode, default is none\n");
-    fprintf(stderr, "  -r <int>    reasoning mode, 0 (default) = no thinking, 1 = thinking\n");
-    exit(EXIT_FAILURE);
-}
+/**
+ * @section main
+ * @{
+ */
 
 int main(int argc, char* argv[]) {
-    // default parameters
-    char* checkpoint_path = NULL; // e.g. out/model.bin
-    float temperature = 1.0f; // 0 = greedy deterministic. 1.0 = original. don't set higher
-    float top_p = 0.9f; // top-p in nucleus sampling. 1.0 = off. 0.9 works well, but slower
-    char* prompt = NULL; // prompt string
-    unsigned long long seed = 0; // seed rng with time by default
-    char* mode = "chat"; // completion|chat
-    char* system_prompt = NULL; // the (optional) system prompt to use in chat mode
-    int enable_thinking = 0; // 1 enables thinking
-    int ctx_length = 0; // context length
+    Options opts;
+    if (options_parse(&opts, argc, argv) < 0) {
+        return EXIT_FAILURE;
+    }
 
-    // poor man's C argparse so we can override the defaults above from the command line
-    if (argc >= 2) {
-        checkpoint_path = argv[1];
+    Qwen* qwen = qwen_create(&opts);
+    if (!qwen) {
+        fprintf(stderr, "[Error] Failed to initialize Qwen\n");
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(opts.mode, "completion") == 0) {
+        completion(qwen, opts.prompt);
+    } else if (strcmp(opts.mode, "chat") == 0) {
+        chat_completion(qwen, opts.system_prompt);
     } else {
-        error_usage();
-    }
-    for (int i = 2; i < argc; i += 2) {
-        // do some basic validation
-        if (i + 1 >= argc) {
-            error_usage();
-        } // must have arg after flag
-        if (argv[i][0] != '-') {
-            error_usage();
-        } // must start with dash
-        if (strlen(argv[i]) != 2) {
-            error_usage();
-        } // must be -x (one dash, one letter)
-        // read in the args
-        if (argv[i][1] == 't') {
-            temperature = atof(argv[i + 1]);
-        } else if (argv[i][1] == 'p') {
-            top_p = atof(argv[i + 1]);
-        } else if (argv[i][1] == 's') {
-            seed = atoi(argv[i + 1]);
-        } else if (argv[i][1] == 'c') {
-            ctx_length = atoi(argv[i + 1]);
-        } else if (argv[i][1] == 'i') {
-            prompt = argv[i + 1];
-        } else if (argv[i][1] == 'm') {
-            mode = argv[i + 1];
-        } else if (argv[i][1] == 'y') {
-            system_prompt = argv[i + 1];
-        } else if (argv[i][1] == 'r') {
-            enable_thinking = atoi(argv[i + 1]);
-        } else {
-            error_usage();
-        }
+        fprintf(stderr, "Unknown mode: %s\n", opts.mode);
     }
 
-    // parameter validation/overrides
-    if (seed <= 0) {
-        seed = (unsigned int) time(NULL);
-    }
-    if (temperature < 0) {
-        temperature = 0;
-    }
-    if (top_p < 0.0f || 1.0f < top_p) {
-        top_p = 0.9f;
-    }
-
-    // build the Transformer via the model .bin file
-    Transformer* transformer = transformer_create(checkpoint_path, ctx_length);
-    if (!transformer) {
-        return EXIT_FAILURE;
-    }
-
-    // build the Tokenizer via the tokenizer .bin file
-    Tokenizer* tokenizer = tokenizer_create(checkpoint_path, enable_thinking);
-    if (!tokenizer) {
-        return EXIT_FAILURE;
-    }
-
-    if (transformer->params.vocab_size != tokenizer->vocab_size) {
-        fprintf(
-            stderr,
-            "[Error] Vocab size mismatch! transformer=%d, tokenizer=%d\n",
-            transformer->params.vocab_size,
-            tokenizer->vocab_size
-        );
-        tokenizer_free(tokenizer);
-        transformer_free(transformer);
-        return EXIT_FAILURE;
-    }
-
-    // build the Sampler
-    Sampler* sampler = sampler_create(transformer->params.vocab_size, temperature, top_p, seed);
-    if (!sampler) {
-        return EXIT_FAILURE;
-    }
-
-    // run!
-    if (strcmp(mode, "completion") == 0) {
-        completion(transformer, tokenizer, sampler, prompt);
-    } else if (strcmp(mode, "chat") == 0) {
-        chat_completion(transformer, tokenizer, sampler, prompt, system_prompt);
-    } else {
-        fprintf(stderr, "Unknown mode: %s\n", mode);
-        error_usage();
-    }
-
-    // memory and file handles cleanup
-    sampler_free(sampler);
-    tokenizer_free(tokenizer);
-    transformer_free(transformer);
-    return 0;
+    qwen_free(qwen);
+    return EXIT_SUCCESS;
 }
+
+/** @} */
