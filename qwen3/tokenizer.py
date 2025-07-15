@@ -52,12 +52,12 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-from jinja2 import Template
 from tokenizers import Tokenizer
 
 #
-# Jinja2 Template Conversion
+# HuggingFace Tokenizer Conversion
 #
+# @templates Requires special ids to reference the proper special tags.
 # @warning Special tokens are handled inversely due to model behavior.
 # - If thinking is enabled, the special tokens for reasoning are **excluded**.
 # - If thinking is disabled, the special tokens are **included**.
@@ -65,98 +65,60 @@ from tokenizers import Tokenizer
 
 
 @dataclass
-class TemplateConfig:
-    suffix: str
-    messages: list[dict[str, str]]
-    enable_thinking: bool
-
-
-# TODO: Add a psuedo-template for tool calling
-def template_config() -> list[TemplateConfig]:
-    print("[Template] Loading configuration.")
-    base = [{"role": "user", "content": "%s"}]
-    system = [{"role": "system", "content": "%s"}, {"role": "user", "content": "%s"}]
-    return [
-        TemplateConfig("", base, False),
-        TemplateConfig(".with-thinking", base, True),
-        TemplateConfig(".with-system", system, False),
-        TemplateConfig(".with-system-and-thinking", system, True),
-    ]
-
-
-def template_render(tokenizer: Tokenizer) -> dict[str, str]:
-    print("[Template] Rendering chat completion templates.")
-    print(tokenizer.chat_template)
-    template = Template(tokenizer.chat_template)
-    return {
-        cfg.suffix: template.render(
-            messages=cfg.messages,
-            add_generation_prompt=True,
-            enable_thinking=cfg.enable_thinking,
-        )
-        for cfg in template_config()
-    }
-
-
-def template_write(tokenizer: Tokenizer, output_file: str) -> None:
-    print("[Template] Writing to standard output.")
-    rendered = template_render(tokenizer)
-    for suffix, text in rendered.items():
-        path = f"{output_file}.template{suffix}"
-        with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-        print(f"[Template] Rendered:\n{text}")
-        print(f"[Template] Wrote {len(text)} bytes to {path}.")
-
-
-#
-# UTF-8 Code Point Conversion
-#
-
-
-def bytes_to_unicode() -> dict[int, str]:
-    """Generate a GPT-2 Byte to Unicode map."""
-    base = list(range(ord("!"), ord("~") + 1))
-    base += list(range(ord("¡"), ord("¬") + 1))
-    base += list(range(ord("®"), ord("ÿ") + 1))
-    codepoints = base[:]
-    offset = 0  # Track added bytes
-    for char in range(256):
-        if char not in base:
-            base.append(char)
-            codepoints.append(256 + offset)
-            offset += 1  # Added a new byte
-    return dict(zip(base, map(chr, codepoints)))
-
-
-def unicode_to_bytes(token: str) -> bytes:
-    """Convert a token to UTF-8 byte sequence."""
-    # Invert keys and values
-    token_to_id: dict[str, int] = {t: i for i, t in bytes_to_unicode().items()}
-    # Map standard unicode bytes
-    codepoints: list[int] = []
-    for char in token:
-        if char in token_to_id:
-            codepoints.append(bytes([token_to_id[char]]))
-        # else: # @warning Enabling this will have consequences down the pipeline.
-        #     codepoints.append(char.encode("utf-8"))  # unmapped unicode
-    # Merge converted byte sequence
-    return b"".join(codepoints)
-
-
-#
-# HuggingFace Tokenizer Conversion
-#
+class SpecialTokens:
+    # core ids
+    bos: int = 151643  # begin of seq (end of text)
+    eos: int = 151645  # end of seq (im end)
+    eot: int = 151644  # end of text (im start)
+    pad: int = 151643  # pad seq (same as bos)
+    # think ids (aka reasoning)
+    bor: int = 151667  # begin of think (inclusion disables)
+    eor: int = 151668  # end of think
+    # tool call ids
+    btc: int = 151657  # begin of tool call (begin tool call)
+    etc: int = 151658  # end of tool call (end tool call)
+    # tool response ids
+    btr: int = 151665  # begin of tool response (tool response start)
+    etr: int = 151666  # end of tool response (tool response end)
+    # @todo See if qwen3 is fill-in-the-middle (FIM) compatible.
+    # these are omitted for now for simplicity
 
 
 @dataclass
 class Vocab:
     size: int
     max_token_length: int
-    bos_id: int
-    eos_id: int
     tokens: list[str]
     scores: dict[str, float]
+    special: SpecialTokens
+
+
+def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialTokens:
+    # Hack: HuggingFace doesn’t expose bos/eos IDs directly
+    SPECIAL_TOKEN_MAP = {
+        "<|endoftext|>": "bos",
+        "<|im_end|>": "eos",
+        "<|im_start|>": "eot",
+        "<think>": "bor",
+        "</think>": "eor",
+        "<tool_call>": "btc",
+        "</tool_call>": "etc",
+        "<tool_response>": "btr",
+        "</tool_response>": "etr",
+    }
+
+    special = SpecialTokens()
+    for token_id, token in tokenizer.added_tokens_decoder.items():
+        field = SPECIAL_TOKEN_MAP.get(token.content)
+        if field:
+            setattr(special, field, token_id)
+            if field == "bos":  # pad mirrors bos
+                special.pad = token_id
+
+    if special.bos == -1 or special.eos == -1 or special.eot == -1:
+        raise ValueError("[Tokenizer] BOS, EOS, and EOT must be defined.")
+
+    return special
 
 
 def tokenizer_config(tokenizer: Tokenizer) -> dict[str, any]:
@@ -166,16 +128,6 @@ def tokenizer_config(tokenizer: Tokenizer) -> dict[str, any]:
     config_path = Path(tokenizer.name_or_path) / "config.json"
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
-
-    if "bos_token_id" not in config:
-        print("[Tokenizer] Warning: Using fallback bos id.")
-    else:
-        print(f"[Tokenizer] bos_id={config['bos_token_id']}")
-
-    if "eos_token_id" not in config:
-        print("[Tokenizer] Warning: Using fallback eos id.")
-    else:
-        print(f"[Tokenizer] eos_id={config['eos_token_id']}")
 
     if "vocab_size" not in config:
         print("[Tokenizer] Warning: Using fallback vocab size.")
@@ -217,8 +169,6 @@ def tokenizer_rank_scores(
             scores[token] = -math.log(rank + 1)
         else:
             scores[token] = -1e6  # Base vocab token
-            # @todo unranked padded tokens get lowest priority
-            # float("-inf")
     return scores
 
 
@@ -245,35 +195,81 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
     max_token_length = max(len(t) for t in tokens)
     rank_table = tokenizer_rank_table(tokenizer)
     rank_scores = tokenizer_rank_scores(rank_table, tokens)
+    special = tokenizer_special_tokens(tokenizer)
 
-    print(f"[Tokenizer] Vocab has {len(tokens)} tokens with max len of {max_token_length}")
+    print(
+        f"[Tokenizer] Vocab has {len(tokens)} tokens with max of {max_token_length} bytes."
+    )
+
     return Vocab(
         size=vocab_size,
         max_token_length=max_token_length,
-        bos_id=config.get("bos_token_id", 151643),
-        eos_id=config.get("eos_token_id", 151645),
         tokens=tokens,
         scores=rank_scores,
+        special=special,
     )
+
+
+def bytes_to_unicode() -> dict[int, str]:
+    """Generate a GPT-2 Byte to Unicode map."""
+    base = list(range(ord("!"), ord("~") + 1))
+    base += list(range(ord("¡"), ord("¬") + 1))
+    base += list(range(ord("®"), ord("ÿ") + 1))
+    codepoints = base[:]
+    offset = 0  # Track added bytes
+    for char in range(256):
+        if char not in base:
+            base.append(char)
+            codepoints.append(256 + offset)
+            offset += 1  # Added a new byte
+    return dict(zip(base, map(chr, codepoints)))
+
+
+def unicode_to_bytes(token: str) -> bytes:
+    """Convert a token to UTF-8 byte sequence."""
+    # Invert keys and values
+    token_to_id: dict[str, int] = {t: i for i, t in bytes_to_unicode().items()}
+    # Map standard unicode bytes
+    codepoints: list[int] = []
+    for char in token:
+        if char in token_to_id:
+            codepoints.append(bytes([token_to_id[char]]))
+        # else: # @warning Enabling this will have consequences down the pipeline.
+        #     codepoints.append(char.encode("utf-8"))  # unmapped unicode
+    # Merge converted byte sequence
+    return b"".join(codepoints)
 
 
 def tokenizer_write(vocab: Vocab, output_file: str) -> None:
     print("[Tokenizer] Serializing model tokenizer.")
-    with open(output_file + ".tokenizer", "wb") as out_f:
+    with open(output_file + ".tokenizer", "wb") as file:
         # Binary header
-        out_f.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
-        out_f.write(struct.pack("i", 1))  # 4 bytes
-        out_f.write(struct.pack("i", vocab.size))
-        out_f.write(struct.pack("i", vocab.max_token_length))
-        out_f.write(struct.pack("i", vocab.bos_id))
-        out_f.write(struct.pack("i", vocab.eos_id))
+        file.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
+        file.write(struct.pack("i", 2))  # 4 bytes
+        file.write(struct.pack("i", vocab.size))
+        file.write(struct.pack("i", vocab.max_token_length))
+        file.write(
+            struct.pack(
+                "10i",
+                vocab.special.bos,
+                vocab.special.eos,
+                vocab.special.eot,
+                vocab.special.pad,
+                vocab.special.bor,
+                vocab.special.eor,
+                vocab.special.btc,
+                vocab.special.etc,
+                vocab.special.btr,
+                vocab.special.etr,
+            )
+        )
 
         # Tokens will be cast to uint8_t on C-side
         for token in vocab.tokens:
             token_bytes = unicode_to_bytes(token)
-            out_f.write(struct.pack("f", vocab.scores[token]))  # float32 score
-            out_f.write(struct.pack("i", len(token_bytes)))  # int32 length
-            out_f.write(token_bytes)  # UTF-8 bytes
+            file.write(struct.pack("f", vocab.scores[token]))  # float32 score
+            file.write(struct.pack("i", len(token_bytes)))  # int32 length
+            file.write(token_bytes)  # UTF-8 bytes
 
     print(f"[Tokenizer] Wrote tokenizer model to {output_file}.tokenizer")
 
@@ -288,7 +284,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.input_dir)
-    template_write(tokenizer, args.output_file)
-
     vocab = tokenizer_vocab(tokenizer)
     tokenizer_write(vocab, args.output_file)
