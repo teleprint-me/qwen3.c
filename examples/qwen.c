@@ -1592,6 +1592,7 @@ typedef struct Options {
     float top_p; // nucleus sampling, 1.0 = off
 } Options;
 
+// read-only: do not allocate to this! copy strings from it as needed.
 Options options_init(void) {
     // set default parameters
     return (Options) {
