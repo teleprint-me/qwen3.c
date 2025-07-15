@@ -29,10 +29,6 @@ release: $(QWEN_SRC)
 optimized: $(QWEN_SRC)
 	$(CC) $(QWEN_SRC) $(OPTIONS) -Ofast -march=native -o $(QWEN_BIN)
 
-.PHONY: runq
-runq: examples/runq.c
-	$(CC) examples/runq.c $(OPTIONS) -Ofast -march=native -o $(QWEN_BIN)
-
 .PHONY: clean
 clean:
 	rm -f $(RUNQ_BIN) $(QWEN_BIN)
