@@ -22,7 +22,7 @@
 
 #define QTKN_MAGIC 0x71746B6E ///< "qtkn" file magic
 #define QTKN_VERSION 1 ///< Tokenizer binary version
-#define QTKN_VOCAB_SIZE 151669 ///< Default vocabulary size for Qwen3
+#define QTKN_VOCAB_SIZE 151936 ///< Default vocabulary size for Qwen3
 #define QTKN_MAX_SEQ_LEN 32768 ///< Max sequence length supported
 
 /**@}*/
@@ -95,14 +95,14 @@ typedef struct Tokenizer {
  * @param enable_thinking Enables or disables "thinking" template mode
  * @return Tokenizer* tokenizer object
  */
-Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thinking);
+Tokenizer* tokenizer_create(const char* in_file, int enable_thinking);
 
 /**
  * @brief Free tokenizer resources.
  *
  * @param tokenizer Tokenizer object
  */
-void tokenizer_free(Tokenizer* tokenizer);
+void tokenizer_free(Tokenizer* t);
 
 /**@}*/
 

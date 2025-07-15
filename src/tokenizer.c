@@ -76,7 +76,7 @@ void template_free(Template* t) {
  * @{
  */
 
-Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thinking) {
+Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
     // Build file path for .tokenizer
     const char* suffix = ".tokenizer";
     size_t len = strlen(in_file) + strlen(suffix);
@@ -91,6 +91,7 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     FILE* file = fopen(file_path, "rb");
     if (!file) {
         fprintf(stderr, "[Tokenizer] Failed to open %s\n", file_path);
+        free(file_path);
         return NULL;
     }
     free(file_path);
@@ -113,13 +114,12 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
         return NULL;
     }
 
-    t->vocab_size = vocab_size;
-
+    fread(&t->vocab_size, sizeof(int32_t), 1, file);
     fread(&t->max_token_length, sizeof(int32_t), 1, file);
     fread(&t->bos_id, sizeof(int32_t), 1, file);
     fread(&t->eos_id, sizeof(int32_t), 1, file);
 
-    t->tokens = calloc(vocab_size, sizeof(Token));
+    t->tokens = calloc(t->vocab_size, sizeof(Token));
     if (!t->tokens) {
         fclose(file);
         free(t);
@@ -127,24 +127,48 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     }
 
     // Read each token entry
-    for (int i = 0; i < vocab_size; i++) {
+    for (int i = 0; i < t->vocab_size; i++) {
         float score;
         int length;
 
         if (fread(&score, sizeof(float), 1, file) != 1) {
-            break;
+            fprintf(stderr, "[Tokenizer] Score read error at index %d\n", i);
+            fclose(file);
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
+            free(t->tokens);
+            free(t);
+            return NULL;
         }
+
         if (fread(&length, sizeof(int), 1, file) != 1) {
-            break;
+            fprintf(stderr, "[Tokenizer] Length read error at index %d\n", i);
+            fclose(file);
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
+            free(t->tokens);
+            free(t);
+            return NULL;
         }
 
         char* buffer = calloc(length + 1, 1);
         if (!buffer || fread(buffer, 1, length, file) != (size_t) length) {
             fprintf(stderr, "[Tokenizer] Token read error at index %d\n", i);
-            break;
+            if (buffer) {
+                free(buffer);
+            }
+            fclose(file);
+            for (int k = 0; k < i; k++) {
+                free(t->tokens[k].entry);
+            }
+            free(t->tokens);
+            free(t);
+            return NULL;
         }
-        buffer[length] = '\0';
 
+        buffer[length] = '\0';
         t->tokens[i].score = score;
         t->tokens[i].entry = buffer;
     }
@@ -154,6 +178,13 @@ Tokenizer* tokenizer_create(const char* in_file, int vocab_size, int enable_thin
     // Load prompt templates
     t->prompt = template_create(in_file, 0, enable_thinking);
     t->system = template_create(in_file, 1, enable_thinking);
+
+    fprintf(stderr, "[Tokenizer] bos_id=%d\n", t->bos_id);
+    fprintf(stderr, "[Tokenizer] eos_id=%d\n", t->eos_id);
+    fprintf(stderr, "[Tokenizer] vocab_size=%d\n", t->vocab_size);
+    fprintf(stderr, "[Tokenizer] max_token_length=%d\n", t->max_token_length);
+    fprintf(stderr, "[Tokenizer] prompt\n%s\n", t->prompt->data);
+    fprintf(stderr, "[Tokenizer] system\n%s\n", t->system->data);
 
     return t;
 }
@@ -180,6 +211,7 @@ void tokenizer_free(Tokenizer* t) {
 
 char* tokenizer_id_to_token(Tokenizer* t, int id) {
     if (!t || id < 0 || id >= t->vocab_size) {
+        fprintf(stderr, "[tokenizer_id_to_token] ERROR: Invalid id! %d\n", id);
         return NULL;
     }
     return t->tokens[id].entry;
@@ -187,15 +219,30 @@ char* tokenizer_id_to_token(Tokenizer* t, int id) {
 
 int tokenizer_token_to_id(Tokenizer* t, const char* token) {
     if (!t || !t->tokens || !token) {
+        fprintf(stderr, "[tokenizer_token_to_id] ERROR: Invalid token! %s\n", token);
         return -1;
     }
 
     // find a match for str in vocab, return its index or -1 if not found
     for (int i = 0; i < t->vocab_size; i++) {
+        if (!t->tokens[i].entry) {
+            fprintf(
+                stderr,
+                "[tokenizer_token_to_id] Error: Malformed entry! "
+                "i=%d, tokens=%p, entry=%s, score=%f\n",
+                i,
+                t->tokens[i],
+                t->tokens[i].entry,
+                t->tokens[i].score
+            );
+            return -1;
+        }
+
         if (0 == strcmp(token, t->tokens[i].entry)) {
             return i;
         }
     }
+
     return -1;
 }
 
@@ -246,12 +293,7 @@ static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
         if (id != -1) {
             out[(n_ids)++] = id;
         } else {
-            fprintf(
-                stderr,
-                "Warning: Unknown character `%c` (codepoint %d)\n",
-                token[0],
-                token[0]
-            );
+            fprintf(stderr, "Warning: Unknown character `%c` (codepoint %d)\n", token[0], token[0]);
         }
     }
 
