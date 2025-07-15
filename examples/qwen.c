@@ -1634,6 +1634,7 @@ int options_parse(Options* o, int argc, char** argv) {
             options_usage();
             return -1;
         }
+
         char flag = argv[i][1];
         char* arg = argv[i + 1];
 
@@ -1645,11 +1646,9 @@ int options_parse(Options* o, int argc, char** argv) {
                 o->top_p = atof(arg);
                 break;
             case 's':
-                {
-                    int seed = abs(atoi(arg));
-                    if (seed) {
-                        o->seed = (unsigned long long) seed;
-                    }
+                int seed = abs(atoi(arg));
+                if (seed) {
+                    o->seed = (unsigned long long) seed;
                 }
                 break;
             case 'c':
@@ -1663,9 +1662,7 @@ int options_parse(Options* o, int argc, char** argv) {
                 o->system_prompt = arg;
                 break;
             case 'm':
-                {
-                    o->mode = arg;
-                }
+                o->mode = arg;
                 break;
             case 'r':
                 o->thinking = atoi(arg) ? THINKING_ON : THINKING_OFF;
