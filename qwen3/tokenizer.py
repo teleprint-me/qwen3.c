@@ -54,6 +54,9 @@ from pathlib import Path
 
 from tokenizers import Tokenizer
 
+QTKN_MAGIC = 0x71746B6E
+QTKN_VERSION = 2
+
 #
 # HuggingFace Tokenizer Conversion
 #
@@ -94,6 +97,8 @@ class Vocab:
 
 
 def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialTokens:
+    print("[Tokenizer] Reading special ids.")
+
     # Hack: HuggingFace doesn’t expose bos/eos IDs directly
     SPECIAL_TOKEN_MAP = {
         "<|endoftext|>": "bos",
@@ -111,6 +116,7 @@ def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialTokens:
     for token_id, token in tokenizer.added_tokens_decoder.items():
         field = SPECIAL_TOKEN_MAP.get(token.content)
         if field:
+            print(f"[Tokenizer] content={token.content}, field={field}, id={token_id}")
             setattr(special, field, token_id)
             if field == "bos":  # pad mirrors bos
                 special.pad = token_id
@@ -244,8 +250,8 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
     print("[Tokenizer] Serializing model tokenizer.")
     with open(output_file + ".tokenizer", "wb") as file:
         # Binary header
-        file.write(struct.pack("I", 0x71746B6E))  # (qtkn) 4 bytes
-        file.write(struct.pack("i", 2))  # 4 bytes
+        file.write(struct.pack("I", QTKN_MAGIC))  # (qtkn) 4 bytes
+        file.write(struct.pack("i", QTKN_VERSION))  # 4 bytes
         file.write(struct.pack("i", vocab.size))
         file.write(struct.pack("i", vocab.max_token_length))
         file.write(
@@ -274,6 +280,47 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
     print(f"[Tokenizer] Wrote tokenizer model to {output_file}.tokenizer")
 
 
+def tokenizer_validate(vocab: Vocab, output_file: str) -> None:
+    print("[Tokenizer] Validating tokenizer model.")
+
+    with open(output_file + ".tokenizer", "rb") as f:
+        magic, version, size, max_len = struct.unpack("I i i i", f.read(16))
+        specials = struct.unpack("10i", f.read(40))
+
+    # --- Core Header ---
+    assert magic == 0x71746B6E, f"[Magic] Expected 0x71746B6E, got 0x{magic:x}"
+    assert version == 2, f"[Version] Expected 2, got {version}"
+    assert size == vocab.size, f"[Size] Expected {vocab.size}, got {size}"
+    assert (
+        max_len == vocab.max_token_length
+    ), f"[MaxLen] Expected {vocab.max_token_length}, got {max_len}"
+
+    print(f"[Validate] magic=0x{magic:x}, version={version}")
+    print(f"[Validate] vocab_size={size}, max_token_length={max_len}")
+
+    # --- Special Tokens ---
+    expected_specials = [
+        vocab.special.bos,
+        vocab.special.eos,
+        vocab.special.eot,
+        vocab.special.pad,
+        vocab.special.bor,
+        vocab.special.eor,
+        vocab.special.btc,
+        vocab.special.etc,
+        vocab.special.btr,
+        vocab.special.etr,
+    ]
+
+    for i, (expected, actual) in enumerate(zip(expected_specials, specials)):
+        assert (
+            expected == actual
+        ), f"[Specials] Index {i}: Expected {expected}, got {actual}"
+        print(f"[Validate] specials[{i}]={actual}")
+
+    print("[Tokenizer] Validation successful.")
+
+
 if __name__ == "__main__":
     from argparse import ArgumentParser
     from transformers import AutoTokenizer
@@ -286,3 +333,4 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(args.input_dir)
     vocab = tokenizer_vocab(tokenizer)
     tokenizer_write(vocab, args.output_file)
+    tokenizer_validate(vocab, args.output_file)
