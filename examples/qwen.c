@@ -1658,10 +1658,9 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
  * @section Chat Completions
  */
 
-void chat_input(const char* guide, char* buffer, size_t bufsize) {
-    // read a line from stdin, up to but not including \n
-    printf("%s", guide);
-    if (fgets(buffer, bufsize, stdin) != NULL) {
+void chat_input(const char* prompt, char* buffer, size_t bufsize) {
+    printf("%s", prompt);
+    if (fgets(buffer, bufsize, stdin)) {
         size_t len = strlen(buffer);
         if (len > 0 && buffer[len - 1] == '\n') {
             buffer[len - 1] = '\0'; // strip newline
