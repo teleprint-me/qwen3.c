@@ -1572,12 +1572,34 @@ int sample(Sampler* sampler, float* logits) {
 /** @} */
 
 /**
- * Completions
+ * @section Completions
  */
 
+/**
+ * @brief Autoregressive text completion.
+ *
+ * Generates a continuation for the given input `prompt` using
+ * the transformer, tokenizer, and sampler provided.
+ *
+ * The prompt is first encoded into token IDs. The transformer
+ * consumes the prompt tokens sequentially (teacher forcing),
+ * after which sampling begins for each subsequent token until:
+ *   - The model predicts BOS/EOS (sequence termination), or
+ *   - The context length (seq_len) is reached.
+ *
+ * @param transformer Pointer to the Transformer model.
+ * @param tokenizer   Pointer to the Tokenizer (handles encoding/decoding).
+ * @param sampler     Pointer to the Sampler (controls temperature/top-p).
+ * @param prompt      UTF-8 input string to complete.
+ *
+ * @note This function streams tokens directly to stdout.
+ * @note Deterministic generation only occurs if temperature ~0
+ *       and the RNG seed is fixed.
+ */
 void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler, char* prompt) {
     fprintf(stderr, "[Completion]\n");
 
+    // Validate prompt
     if (!prompt || strlen(prompt) == 0) {
         fprintf(stderr, "[Completion] Error: Missing prompt. Use -i 'string'.\n");
         exit(EXIT_FAILURE);
@@ -1598,30 +1620,31 @@ void completion(Transformer* transformer, Tokenizer* tokenizer, Sampler* sampler
         exit(EXIT_FAILURE);
     }
 
-    // Initialize generation state
-    int token = ids[0]; // first prompt token
-    int next = 0;
+    // Initialize autoregressive state
+    int token = ids[0]; // first token from prompt
+    int next = 0; // next token to be generated
 
     for (int pos = 0; pos < transformer->params.seq_len; pos++) {
-        // Forward pass: get logits for the next token
+        // Forward pass: compute logits for this position
         float* logits = forward(transformer, token, pos);
 
-        // Decide next token:
+        // Teacher forcing for prompt, sampling for generation
         if (pos + 1 < n_ids) {
             next = ids[pos + 1]; // still consuming prompt
         } else {
             next = sample(sampler, logits); // now generating
         }
 
-        // Output the decoded token
+        // Decode and stream the current token
         printf("%s", tokenizer_id_to_token(tokenizer, token));
         fflush(stdout);
 
-        // Stop if we hit BOS/EOS after prompt
+        // Stop if BOS/EOS encountered after prompt
         if (next == tokenizer->bos_id || next == tokenizer->eos_id) {
             break;
         }
 
+        // Advance autoregressive state
         token = next;
     }
 
