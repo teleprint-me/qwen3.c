@@ -33,7 +33,7 @@
 #define QWEN_VERSION 1
 
 #define QTKN_MAGIC 0x71746B6E
-#define QTKN_VERSION 1
+#define QTKN_VERSION 2
 
 #define MAX_SEQ_LEN 32768
 
@@ -308,7 +308,7 @@ bool model_read_params(Transformer* t, int override_seq_len) {
     const int padding = 256;
     t->model = ((char*) t->model) + padding; // add alignment to weights
 
-    fprintf(stderr, "[Params] magic=%s\n", (char*) &t->params.magic);
+    fprintf(stderr, "[Params] magic=%x\n", t->params.magic);
     fprintf(stderr, "[Params] version=%d\n", t->params.version);
     fprintf(stderr, "[Params] hidden_size=%d\n", t->params.dim);
     fprintf(stderr, "[Params] intermediate_size=%d\n", t->params.hidden_dim);
@@ -541,7 +541,8 @@ bool model_create_state(Transformer* t) {
     size_t total_bytes = p->dim * 3 * sizeof(float) + // x, x_rms_norm
                          proj_dim * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_rms_norm, qx.q
                          (proj_dim / GS) * sizeof(float) + // qx.s
-                         p->hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
+                         p->hidden_dim * (2 * sizeof(float) + sizeof(int8_t))
+                         + // mlp, mlp_gate, qh.q
                          (p->hidden_dim / GS) * sizeof(float) + // qh.s
                          p->n_heads * p->seq_len * sizeof(float) + // scores
                          p->vocab_size * sizeof(float) + // logits
@@ -993,74 +994,6 @@ float* forward(Transformer* t, int token, int pos) {
 /** @} */
 
 /**
- * @section Tokenizer: Chat Template
- * @{
- */
-
-typedef struct Template {
-    char* data; ///< UTF-8 prompt string (dynamically allocated)
-    ssize_t size; ///< Size in bytes (excluding null terminator)
-} Template;
-
-Template* template_create(const char* in_file, int enable_system, int enable_thinking) {
-    const char* suffix = NULL;
-    if (enable_system) {
-        suffix = enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system";
-    } else {
-        suffix = enable_thinking ? ".template.with-thinking" : ".template";
-    }
-
-    // Construct full file path
-    size_t len = strlen(in_file) + strlen(suffix);
-    char* file_path = calloc(len + 1, 1);
-    if (!file_path) {
-        return NULL;
-    }
-
-    memcpy(file_path, in_file, strlen(in_file));
-    memcpy(file_path + strlen(in_file), suffix, strlen(suffix));
-    file_path[len] = '\0';
-
-    FILE* file = fopen(file_path, "rb");
-    free(file_path); // cleanup here is safe
-    if (!file) {
-        return NULL;
-    }
-
-    fseek(file, 0, SEEK_END);
-    ssize_t size = ftell(file);
-    rewind(file);
-
-    Template* template = calloc(1, sizeof(Template));
-    if (!template) {
-        fclose(file);
-        return NULL;
-    }
-
-    template->size = size;
-    template->data = calloc(size + 1, 1); // null-terminate for convenience
-    if (!template->data) {
-        fclose(file);
-        free(template);
-        return NULL;
-    }
-
-    fread(template->data, 1, size, file);
-    fclose(file);
-    return template;
-}
-
-void template_free(Template* t) {
-    if (!t) {
-        return;
-    }
-    free(t->data);
-    free(t);
-}
-
-/** @} */
-
-/**
  * @section Tokenizer: BPE (Byte-pair Encoding) NFC (Normalization Form Canonical Composition)
  * @{
  */
@@ -1070,17 +1003,33 @@ typedef struct Token {
     float score; ///< Merge rank score (higher is better)
 } Token;
 
+typedef struct SpecialToken {
+    // core ids
+    int bos; // begin of seq (end of text)
+    int eos; // end of seq (im end)
+    int eot; // end of text (im start)
+    int pad; // pad seq (same as bos)
+    // think ids (aka reasoning)
+    int bor; // begin of think (inclusion disables)
+    int eor; // end of think
+    // tool call ids
+    int btc; // begin of tool call (begin tool call)
+    int etc; // end of tool call (end tool call)
+    // tool response ids
+    int btr; // begin of tool response (tool response start)
+    int etr; // end of tool response (tool response end)
+} SpecialToken;
+
 typedef struct Tokenizer {
     Token* tokens; ///< Vocabulary table (id → token)
-    Template* prompt; ///< User prompt template
-    Template* system; ///< System + user prompt template
-    int bos_id; ///< Beginning-of-sequence token id
-    int eos_id; ///< End-of-sequence token id
+    SpecialToken special;
+    int magic;
+    int version;
     int vocab_size; ///< Total number of tokens
-    int max_token_length; ///< Maximum UTF-8 length of any token
+    int max_len; ///< Maximum UTF-8 length of any token
 } Tokenizer;
 
-Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
+Tokenizer* tokenizer_create(const char* in_file) {
     // Build file path for .tokenizer
     const char* suffix = ".tokenizer";
     size_t len = strlen(in_file) + strlen(suffix);
@@ -1100,28 +1049,25 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
     }
     free(file_path);
 
-    // Read header
-    uint32_t magic = 0;
-    int32_t version = 0;
-    fread(&magic, sizeof(uint32_t), 1, file);
-    fread(&version, sizeof(int32_t), 1, file);
-
-    if (QTKN_MAGIC != magic || QTKN_VERSION != version) {
-        fprintf(stderr, "[Tokenizer] Invalid tokenizer format.\n");
-        fclose(file);
-        return NULL;
-    }
-
     Tokenizer* t = calloc(1, sizeof(Tokenizer));
     if (!t) {
         fclose(file);
         return NULL;
     }
 
+    // Read header
+    fread(&t->magic, sizeof(uint32_t), 1, file);
+    fread(&t->version, sizeof(int32_t), 1, file);
+
+    if (QTKN_MAGIC != t->magic || QTKN_VERSION != t->version) {
+        fprintf(stderr, "[Tokenizer] Invalid tokenizer format.\n");
+        fclose(file);
+        return NULL;
+    }
+
     fread(&t->vocab_size, sizeof(int32_t), 1, file);
-    fread(&t->max_token_length, sizeof(int32_t), 1, file);
-    fread(&t->bos_id, sizeof(int32_t), 1, file);
-    fread(&t->eos_id, sizeof(int32_t), 1, file);
+    fread(&t->max_len, sizeof(int32_t), 1, file);
+    fread(&t->special, sizeof(SpecialToken), 1, file);
 
     t->tokens = calloc(t->vocab_size, sizeof(Token));
     if (!t->tokens) {
@@ -1179,16 +1125,13 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
 
     fclose(file);
 
-    // Load prompt templates
-    t->prompt = template_create(in_file, 0, enable_thinking);
-    t->system = template_create(in_file, 1, enable_thinking);
-
-    fprintf(stderr, "[Tokenizer] bos_id=%d\n", t->bos_id);
-    fprintf(stderr, "[Tokenizer] eos_id=%d\n", t->eos_id);
+    fprintf(stderr, "[Tokenizer] magic=%x\n", t->magic);
+    fprintf(stderr, "[Tokenizer] version=%d\n", t->version);
     fprintf(stderr, "[Tokenizer] vocab_size=%d\n", t->vocab_size);
-    fprintf(stderr, "[Tokenizer] max_token_length=%d\n", t->max_token_length);
-    fprintf(stderr, "[Tokenizer] prompt\n%s\n", t->prompt->data);
-    fprintf(stderr, "[Tokenizer] system\n%s\n", t->system->data);
+    fprintf(stderr, "[Tokenizer] max_len=%d\n", t->max_len);
+    fprintf(stderr, "[Tokenizer] bos=%d\n", t->special.bos);
+    fprintf(stderr, "[Tokenizer] eos=%d\n", t->special.eos);
+    fprintf(stderr, "[Tokenizer] eot=%d\n", t->special.eot);
 
     return t;
 }
@@ -1201,8 +1144,6 @@ void tokenizer_free(Tokenizer* t) {
         free(t->tokens[i].entry);
     }
     free(t->tokens);
-    template_free(t->prompt);
-    template_free(t->system);
     free(t);
 }
 
@@ -1258,7 +1199,7 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
  */
 
 static int tokenizer_find_special_token(Tokenizer* t, char* start, char* out) {
-    for (int k = 0; start[k] && k < t->max_token_length; ++k) {
+    for (int k = 0; start[k] && k < t->max_len; ++k) {
         if (start[k] == '>') {
             int n_bytes = k + 1; // number of bytes consumed
             strncpy(out, start, n_bytes);
@@ -1275,7 +1216,7 @@ static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
 
     while (*bytes) {
         int id = -1;
-        char token[t->max_token_length];
+        char token[t->max_len];
         token[0] = '\0';
 
         if (*bytes == '<') {
@@ -1313,11 +1254,7 @@ static int tokenizer_find_best_merge(
 
     for (int i = 0; i < n_ids - 1; ++i) {
         snprintf(
-            buf,
-            t->max_token_length * 2 + 1,
-            "%s%s",
-            t->tokens[ids[i]].entry,
-            t->tokens[ids[i + 1]].entry
+            buf, t->max_len * 2 + 1, "%s%s", t->tokens[ids[i]].entry, t->tokens[ids[i + 1]].entry
         );
 
         int merged_id = tokenizer_token_to_id(t, buf);
@@ -1338,7 +1275,7 @@ static int tokenizer_find_best_merge(
 }
 
 void tokenizer_merge_token_ids(Tokenizer* t, int* ids, int* n_ids) {
-    char* buffer = malloc(t->max_token_length * 2 + 1);
+    char* buffer = malloc(t->max_len * 2 + 1);
     while (1) {
         int best_id, best_idx;
         if (!tokenizer_find_best_merge(t, ids, *n_ids, buffer, &best_id, &best_idx)) {
@@ -1601,10 +1538,10 @@ Options options_init(void) {
         .path = NULL,
         .mode = "chat",
         .seed = (unsigned long long) time(NULL),
+        .thinking = THINKING_OFF,
         .temperature = 1.0f,
         .top_p = 0.9f,
-        .thinking = THINKING_OFF,
-        .seq_len = 0,
+        .seq_len = MAX_SEQ_LEN,
     };
 }
 
@@ -1697,7 +1634,7 @@ Qwen* qwen_create(Options* o) {
     }
 
     // build the Tokenizer via the tokenizer .bin file
-    q->tokenizer = tokenizer_create(o->path, o->thinking);
+    q->tokenizer = tokenizer_create(o->path);
     if (!q->tokenizer) {
         goto tokenizer_failed;
     }
@@ -1768,24 +1705,24 @@ void qwen_free(Qwen* q) {
  * @note Deterministic generation only occurs if temperature ~0
  *       and the RNG seed is fixed.
  */
-void completion(Qwen* qwen, char* prompt) {
+void completion(Qwen* qwen, Options* opts) {
     fprintf(stderr, "[Completion]\n");
 
     // Validate prompt
-    if (!prompt || strlen(prompt) == 0) {
+    if (!opts->prompt || 0 == strlen(opts->prompt)) {
         fprintf(stderr, "[Completion] Error: Missing prompt. Use -i 'string'.\n");
         exit(EXIT_FAILURE);
     }
 
     // Encode the prompt into token IDs
-    int* ids = calloc(strlen(prompt) + 1, sizeof(int)); // +1 for null terminator
+    int* ids = calloc(strlen(opts->prompt) + 1, sizeof(int)); // +1 for null terminator
     if (!ids) {
         fprintf(stderr, "[Completion] Error: Failed to allocate memory for input ids.\n");
         exit(EXIT_FAILURE);
     }
 
     int n_ids = 0;
-    tokenizer_encode(qwen->tokenizer, prompt, ids, &n_ids);
+    tokenizer_encode(qwen->tokenizer, opts->prompt, ids, &n_ids);
     if (n_ids < 1) {
         fprintf(stderr, "[Completion] Error: Failed to encode input prompt.\n");
         free(ids);
@@ -1812,7 +1749,7 @@ void completion(Qwen* qwen, char* prompt) {
         fflush(stdout);
 
         // Stop if BOS/EOS encountered after prompt
-        if (next == qwen->tokenizer->bos_id || next == qwen->tokenizer->eos_id) {
+        if (next == qwen->tokenizer->special.bos || next == qwen->tokenizer->special.eos) {
             break;
         }
 
@@ -1830,6 +1767,69 @@ void completion(Qwen* qwen, char* prompt) {
  * @section Chat Completions
  * @{
  */
+
+typedef struct ChatContext {
+    char* buffer; // growing UTF-8 string (conversation so far)
+    size_t capacity; // max allowed (MAX_SEQ_LEN)
+    size_t length; // current used length
+} ChatContext;
+
+ChatContext* chat_context_create(size_t max_seq_len) {
+    ChatContext* ctx = calloc(1, sizeof(ChatContext));
+    if (!ctx) {
+        return NULL;
+    }
+    ctx->length = 0;
+    ctx->capacity = max_seq_len;
+    ctx->buffer = calloc(max_seq_len, 1);
+    return ctx;
+}
+
+void chat_context_free(ChatContext* ctx) {
+    if (!ctx) {
+        return;
+    }
+    free(ctx->buffer);
+    free(ctx);
+}
+
+void chat_append_turn(
+    ChatContext* ctx, Tokenizer* t, const char* role, const char* content, Thinking think
+) {
+    const char* eot = tokenizer_id_to_token(t, t->special.eot); // <im_start>
+    const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
+
+    // optional reasoning suppression
+    const char* bor = THINKING_ON == think ? tokenizer_id_to_token(t, t->special.bor) : "";
+    const char* eor = THINKING_ON == think ? tokenizer_id_to_token(t, t->special.eor) : "";
+
+    char turn[8096]; // temporary, local stack buffer for one turn
+    int written = snprintf(
+        turn,
+        sizeof(turn),
+        "%s%s\n%s%s\n%s\n%s\n", // e.g. <im_start>role\ncontent<im_end>\n<think>...</think>\n
+        eot,
+        role,
+        content,
+        eos,
+        bor,
+        eor
+    );
+
+    if (written < 0 || (size_t) written >= sizeof(turn)) {
+        fprintf(stderr, "[Chat] Turn rendering overflow.\n");
+        return;
+    }
+    // append to chat buffer if space permits
+    if (ctx->length + written >= ctx->capacity) {
+        fprintf(stderr, "[Chat] Context overflow! capacity=%zu, written=%d.\n", ctx->capacity, written);
+        return;
+    }
+
+    memcpy(ctx->buffer + ctx->length, turn, written);
+    ctx->length += written;
+    ctx->buffer[ctx->length] = '\0';
+}
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
     printf("%s", prompt);
@@ -1851,72 +1851,62 @@ bool chat_reset(int* user, int* pos) {
     return true;
 }
 
-void chat_completion(Qwen* qwen, char* system_prompt) {
+void chat_completion(Qwen* qwen, Options* opts) {
     fprintf(stderr, "[ChatCompletion]\n");
 
-    char prompt[MAX_SEQ_LEN];
-    char template[MAX_SEQ_LEN];
+    ChatContext* ctx = chat_context_create(opts->seq_len);
+    if (!ctx) {
+        fprintf(stderr, "[Chat] Failed to allocate context.\n");
+        return;
+    }
 
-    int user = 1; // user starts
-    int u_id = 0; // user token id
-    int n_ids = 0; // number of token ids
-    int* ids = (int*) malloc(MAX_SEQ_LEN * sizeof(int)); // array of token ids
+    int* ids = malloc(MAX_SEQ_LEN * sizeof(int));
+    if (!ids) {
+        chat_context_free(ctx);
+        return;
+    }
 
-    // start the main loop
-    int token = 0; // stores the current token to feed into the transformer
-    int next = 0; // will store the next token in the sequence
-    int pos = 0; // position in the sequence
+    // Add system prompt once
+    if (opts->system_prompt) {
+        chat_append_turn(ctx, qwen->tokenizer, "system", opts->system_prompt, opts->thinking);
+    }
+
+    char user_input[512];
+    int user_turn = 1;
+    int n_ids = 0, u_id = 0, token = 0, next = 0, pos = 0;
+
     while (1) {
-        // if context window is exceeded, clear it
         if (pos >= qwen->model->params.seq_len) {
-            chat_reset(&user, &pos);
+            chat_reset(&user_turn, &pos);
+            ctx->length = 0; // clear buffer on reset
+            continue;
         }
 
-        // when it is the user's turn to contribute tokens to the dialog...
-        if (user) {
-            // get the user prompt from stdin
-            chat_input("\n> ", prompt, sizeof(prompt));
-            // terminate if user enters a blank prompt
-            if (!prompt[0]) {
-                break;
-            }
+        if (user_turn) {
+            chat_input("\n> ", user_input, sizeof(user_input));
+            if (!user_input[0]) break;
 
-            // render user/system prompts into the Qwen3 prompt template schema
-            if (pos == 0 && system_prompt) {
-                sprintf(template, qwen->tokenizer->system->data, system_prompt, prompt);
-            } else {
-                sprintf(template, qwen->tokenizer->prompt->data, prompt);
-            }
+            chat_append_turn(ctx, qwen->tokenizer, "user", user_input, true);
 
-            // encode the rendered prompt into tokens
-            tokenizer_encode(qwen->tokenizer, template, ids, &n_ids);
-            u_id = 0; // reset the user index
-            user = 0;
+            // encode entire context
+            tokenizer_encode(qwen->tokenizer, ctx->buffer, ids, &n_ids);
+            u_id = 0;
+            user_turn = 0;
         }
 
-        // determine the token to pass into the transformer next
-        if (u_id < n_ids) {
-            // if we are still processing the input prompt, force the next prompt token
-            token = ids[u_id++];
-        } else {
-            // otherwise use the next token sampled from previous turn
-            token = next;
-        }
-
-        // printf("|pos=%d token=%d '%s'|\n",pos,token,tokenizer->vocab[token]);
-
-        // forward the transformer to get logits for the next token
+        token = (u_id < n_ids) ? ids[u_id++] : next;
         float* logits = forward(qwen->model, token, pos);
         next = sample(qwen->sampler, logits);
         pos++;
 
-        // assistant is responding
         if (u_id >= n_ids) {
-            if (token == qwen->tokenizer->bos_id || token == qwen->tokenizer->eos_id) {
-                // EOS token ends the assistant turn
+            if (token == qwen->tokenizer->special.eos) {
                 printf("\n");
-                user = 1;
-            } else if (next != qwen->tokenizer->bos_id && next != qwen->tokenizer->eos_id) {
+                user_turn = 1;
+
+                // append assistant turn so context includes it for next round
+                chat_append_turn(ctx, qwen->tokenizer, "assistant", "", false);
+            } else {
                 printf("%s", tokenizer_id_to_token(qwen->tokenizer, next));
                 fflush(stdout);
             }
@@ -1924,6 +1914,7 @@ void chat_completion(Qwen* qwen, char* system_prompt) {
     }
 
     free(ids);
+    chat_context_free(ctx);
 }
 
 /** @} */
@@ -1934,7 +1925,7 @@ void chat_completion(Qwen* qwen, char* system_prompt) {
  */
 
 int main(int argc, char* argv[]) {
-    Options opts;
+    Options opts = options_init();
     if (options_parse(&opts, argc, argv) < 0) {
         return EXIT_FAILURE;
     }
@@ -1946,9 +1937,9 @@ int main(int argc, char* argv[]) {
     }
 
     if (strcmp(opts.mode, "completion") == 0) {
-        completion(qwen, opts.prompt);
+        completion(qwen, &opts);
     } else if (strcmp(opts.mode, "chat") == 0) {
-        chat_completion(qwen, opts.system_prompt);
+        chat_completion(qwen, &opts);
     } else {
         fprintf(stderr, "Unknown mode: %s\n", opts.mode);
     }
