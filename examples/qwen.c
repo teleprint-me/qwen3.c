@@ -1570,7 +1570,7 @@ int options_parse(Options* o, int argc, char** argv) {
     for (int i = 2; i < argc; i += 2) {
         if (i + 1 >= argc || argv[i][0] != '-' || strlen(argv[i]) != 2) {
             options_usage();
-            return -1;
+            return 1;
         }
 
         char flag = argv[i][1];
@@ -1926,7 +1926,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
 
 int main(int argc, char* argv[]) {
     Options opts = options_init();
-    if (options_parse(&opts, argc, argv) < 0) {
+    if (0 != options_parse(&opts, argc, argv)) {
         return EXIT_FAILURE;
     }
 
