@@ -17,7 +17,7 @@ int main(int argc, const char* argv[]) {
     }
 
     const char* model_path = argv[1];
-    Tokenizer* tokenizer = tokenizer_create(model_path, QTKN_VOCAB_SIZE, 0);
+    Tokenizer* tokenizer = tokenizer_create(model_path, 0);
     if (!tokenizer) {
         fprintf(stderr, "[Tokenizer] Failed to load tokenizer.\n");
         return 1;
