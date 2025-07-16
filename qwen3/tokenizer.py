@@ -29,7 +29,7 @@ Binary File Layout:
 -------------------
 [int32] magic (0x71746B6E)  # 'qtkn'
 [int32] version             # format version (1)
-[int32] max_token_length
+[int32] max_len
 [int32] bos_token_id
 [int32] eos_token_id
 [
@@ -90,7 +90,7 @@ class SpecialTokens:
 @dataclass
 class Vocab:
     size: int
-    max_token_length: int
+    max_len: int
     tokens: list[str]
     scores: dict[str, float]
     special: SpecialTokens
@@ -198,18 +198,16 @@ def tokenizer_vocab(tokenizer: Tokenizer) -> Vocab:
             tokens.append(f"<|pad_{start_id + i}|>")
         assert len(tokens) == vocab_size, "Vocab size must be equal to model embed dim"
 
-    max_token_length = max(len(t) for t in tokens)
+    max_len = max(len(t) for t in tokens)
     rank_table = tokenizer_rank_table(tokenizer)
     rank_scores = tokenizer_rank_scores(rank_table, tokens)
     special = tokenizer_special_tokens(tokenizer)
 
-    print(
-        f"[Tokenizer] Vocab has {len(tokens)} tokens with max of {max_token_length} bytes."
-    )
+    print(f"[Tokenizer] Vocab has {len(tokens)} tokens with max len of {max_len} bytes.")
 
     return Vocab(
         size=vocab_size,
-        max_token_length=max_token_length,
+        max_len=max_len,
         tokens=tokens,
         scores=rank_scores,
         special=special,
@@ -253,7 +251,7 @@ def tokenizer_write(vocab: Vocab, output_file: str) -> None:
         file.write(struct.pack("I", QTKN_MAGIC))  # (qtkn) 4 bytes
         file.write(struct.pack("i", QTKN_VERSION))  # 4 bytes
         file.write(struct.pack("i", vocab.size))
-        file.write(struct.pack("i", vocab.max_token_length))
+        file.write(struct.pack("i", vocab.max_len))
         file.write(
             struct.pack(
                 "10i",
@@ -291,12 +289,10 @@ def tokenizer_validate(vocab: Vocab, output_file: str) -> None:
     assert magic == 0x71746B6E, f"[Magic] Expected 0x71746B6E, got 0x{magic:x}"
     assert version == 2, f"[Version] Expected 2, got {version}"
     assert size == vocab.size, f"[Size] Expected {vocab.size}, got {size}"
-    assert (
-        max_len == vocab.max_token_length
-    ), f"[MaxLen] Expected {vocab.max_token_length}, got {max_len}"
+    assert max_len == vocab.max_len, f"[MaxLen] Expected {vocab.max_len}, got {max_len}"
 
     print(f"[Validate] magic=0x{magic:x}, version={version}")
-    print(f"[Validate] vocab_size={size}, max_token_length={max_len}")
+    print(f"[Validate] vocab_size={size}, max_len={max_len}")
 
     # --- Special Tokens ---
     expected_specials = [
