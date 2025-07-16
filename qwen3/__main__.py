@@ -7,7 +7,7 @@ from argparse import ArgumentParser, Namespace
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from qwen3.tokenizer import template_write, tokenizer_vocab, tokenizer_write
+from qwen3.tokenizer import tokenizer_validate, tokenizer_vocab, tokenizer_write
 from qwen3.weights import model_load, model_params, model_write
 
 
@@ -30,9 +30,9 @@ if __name__ == "__main__":
 
     # Export the tokenizer model
     tokenizer = AutoTokenizer.from_pretrained(args.input_dir)
-    template_write(tokenizer, args.output_file)
     vocab = tokenizer_vocab(tokenizer)
     tokenizer_write(vocab, args.output_file)
+    tokenizer_validate(vocab, args.output_file)
 
     # Export the model weights
     state = AutoModelForCausalLM.from_pretrained(args.input_dir).state_dict()
