@@ -68,7 +68,7 @@ QTKN_VERSION = 2
 
 
 @dataclass
-class SpecialTokens:
+class SpecialToken:
     # core ids
     bos: int = 151643  # begin of seq (end of text)
     eos: int = 151645  # end of seq (im end)
@@ -93,10 +93,10 @@ class Vocab:
     max_len: int
     tokens: list[str]
     scores: dict[str, float]
-    special: SpecialTokens
+    special: SpecialToken
 
 
-def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialTokens:
+def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialToken:
     print("[Tokenizer] Reading special ids.")
 
     # Hack: HuggingFace doesn’t expose bos/eos IDs directly
@@ -112,7 +112,7 @@ def tokenizer_special_tokens(tokenizer: Tokenizer) -> SpecialTokens:
         "</tool_response>": "etr",
     }
 
-    special = SpecialTokens()
+    special = SpecialToken()
     for token_id, token in tokenizer.added_tokens_decoder.items():
         field = SPECIAL_TOKEN_MAP.get(token.content)
         if field:
