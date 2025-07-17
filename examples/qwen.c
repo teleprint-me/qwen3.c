@@ -1873,6 +1873,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
     int current = 0; // stores the current token to feed into the transformer
     int next = 0; // will store the next token in the sequence
     int pos = 0; // position in the sequence
+    uint64_t tg = 0; // token generation
 
     while (1) {
         // if context window is exceeded, clear it
@@ -1900,9 +1901,14 @@ void chat_completion(Qwen* qwen, Options* opts) {
             chat_append_user(c, t, opts->thinking, prompt);
 
             // encode the rendered prompt into tokens
+            uint64_t pp = time_now_ms();
+            fprintf(stderr, "\n> Prompt processing > ");
             tokenizer_encode(t, c->buffer, ids, &n_ids);
+            fprintf(stderr, "%lu ms\n\n", time_now_ms() - pp);
+
             user_id = 0; // reset the user index
             user_turn = 0;
+            tg = time_now_ms();
         }
 
         current = (user_id < n_ids) ? ids[user_id++] : next;
@@ -1915,6 +1921,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
             if (next == t->special.bos || next == t->special.eos) {
                 printf("\n");
                 user_turn = 1;
+                fprintf(stderr, "\n> Token generation > %lu ms\n", time_now_ms() - tg);
             } else {
                 printf("%s", tokenizer_id_to_token(t, next));
                 fflush(stdout);
