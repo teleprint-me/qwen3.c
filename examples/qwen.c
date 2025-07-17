@@ -1811,7 +1811,9 @@ void chat_context_free(ChatContext* ctx) {
 }
 
 static inline bool chat_append(ChatContext* c, const char* fmt, ...) {
-    if (!c || !fmt) return false;
+    if (!c || !fmt) {
+        return false;
+    }
 
     va_list args;
     va_start(args, fmt);
@@ -1851,8 +1853,8 @@ bool chat_append_user(ChatContext* c, Tokenizer* t, Thinking think, const char* 
     if (THINKING_OFF == think) {
         if (!chat_append(
             c, "%s\n\n%s\n",
-            tokenizer_id_to_token(t, t->special.bor),
-            tokenizer_id_to_token(t, t->special.eor)
+                tokenizer_id_to_token(t, t->special.bor),
+                tokenizer_id_to_token(t, t->special.eor)
         )) { return false; }
     }
 
@@ -1876,7 +1878,7 @@ void chat_input(const char* prompt, char* buffer, size_t bufsize) {
 static inline uint64_t time_now_ms(void) {
     struct timespec ts;
     timespec_get(&ts, TIME_UTC);
-    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    return (uint64_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 void chat_completion(Qwen* qwen, Options* opts) {
@@ -1924,7 +1926,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
             // Optional system prompt (NULL or a valid string)
             if (pos == 0 && opts->system_prompt) {
                 chat_append_system(c, t, opts->system_prompt);
-            } 
+            }
 
             chat_append_user(c, t, opts->thinking, prompt);
 
