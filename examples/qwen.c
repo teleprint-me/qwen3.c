@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -1809,33 +1810,57 @@ void chat_context_free(ChatContext* ctx) {
     free(ctx);
 }
 
-void chat_append_system(ChatContext* c, Tokenizer* t, const char* content) {
-    const char* eot = tokenizer_id_to_token(t, t->special.eot); // <im_start>
-    const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
+static inline bool chat_append(ChatContext* c, const char* fmt, ...) {
+    if (!c || !fmt) return false;
 
-    c->size += snprintf(c->buffer, MAX_SEQ_LEN, "%ssystem\n%s%s\n", eot, content, eos);
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(c->buffer + c->size, c->capacity - c->size, fmt, args);
+    va_end(args);
 
-    // fprintf(stderr, "[Chat] buffer (user)\n%s", c->buffer); // debug
-}
-
-void chat_append_user(ChatContext* c, Tokenizer* t, Thinking think, const char* content) {
-    const char* eot = tokenizer_id_to_token(t, t->special.eot); // <im_start>
-    const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
-
-    // User message
-    c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%suser\n%s%s\n", eot, content, eos);
-
-    // Assistant header
-    c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%sassistant\n", eot);
-
-    // Optional reasoning suppression (THINKING_OFF)
-    if (THINKING_OFF == think) {
-        const char* bor = tokenizer_id_to_token(t, t->special.bor); // <think>
-        const char* eor = tokenizer_id_to_token(t, t->special.eor); // </think>
-        c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%s\n\n%s\n", bor, eor);
+    if (written < 0 || c->size + written >= c->capacity) {
+        fprintf(stderr, "[Chat] Context overflow!\n");
+        return false;
     }
 
-    // fprintf(stderr, "[Chat] buffer (user)\n%s", c->buffer); // debug
+    c->size += written;
+
+#ifdef DEBUG_CHAT
+    fprintf(stderr, "[Chat] buffer (%zu/%zu)\n%s", c->size, c->capacity, c->buffer);
+#endif
+
+    return true;
+}
+
+bool chat_append_system(ChatContext* c, Tokenizer* t, const char* content) {
+    return chat_append(
+        c, "%s%s\n%s%s\n",
+        tokenizer_id_to_token(t, t->special.eot), "system",
+        content, tokenizer_id_to_token(t, t->special.eos)
+    );
+}
+
+bool chat_append_user(ChatContext* c, Tokenizer* t, Thinking think, const char* content) {
+    if (!chat_append(
+        c, "%s%s\n%s%s\n%s%s\n",
+        tokenizer_id_to_token(t, t->special.eot), "user",
+        content, tokenizer_id_to_token(t, t->special.eos),
+        tokenizer_id_to_token(t, t->special.eot), "assistant"
+    )) { return false; }
+
+    if (THINKING_OFF == think) {
+        if (!chat_append(
+            c, "%s\n\n%s\n",
+            tokenizer_id_to_token(t, t->special.bor),
+            tokenizer_id_to_token(t, t->special.eor)
+        )) { return false; }
+    }
+
+    return true;
+}
+
+bool chat_append_assistant(ChatContext* c, Tokenizer* t, const char* content) {
+    return chat_append(c, "%s%s\n", content, tokenizer_id_to_token(t, t->special.eos));
 }
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
@@ -1873,6 +1898,9 @@ void chat_completion(Qwen* qwen, Options* opts) {
     int current = 0; // stores the current token to feed into the transformer
     int next = 0; // will store the next token in the sequence
     int pos = 0; // position in the sequence
+
+    uint64_t cycles = 0; // number of tokens generated
+    uint64_t pp = 0; // prompt processing
     uint64_t tg = 0; // token generation
 
     while (1) {
@@ -1901,27 +1929,30 @@ void chat_completion(Qwen* qwen, Options* opts) {
             chat_append_user(c, t, opts->thinking, prompt);
 
             // encode the rendered prompt into tokens
-            uint64_t pp = time_now_ms();
-            fprintf(stderr, "\n> Prompt processing > ");
+            pp = time_now_ms();
             tokenizer_encode(t, c->buffer, ids, &n_ids);
-            fprintf(stderr, "%lu ms\n\n", time_now_ms() - pp);
+            pp = time_now_ms() - pp;
+            tg = time_now_ms();
 
             user_id = 0; // reset the user index
-            user_turn = 0;
-            tg = time_now_ms();
+            user_turn = 0; // enable generation
+            cycles = 0;
         }
 
         current = (user_id < n_ids) ? ids[user_id++] : next;
         float* logits = forward(m, current, pos);
         next = sample(s, logits);
         pos++;
+        cycles++;
 
         // assistant is responding
         if (user_id >= n_ids) {
             if (next == t->special.bos || next == t->special.eos) {
                 printf("\n");
                 user_turn = 1;
-                fprintf(stderr, "\n> Token generation > %lu ms\n", time_now_ms() - tg);
+
+                tg = time_now_ms() - tg;
+                fprintf(stderr, "\n[pp %lums] [tg %lums] [t/ms %.3ft]\n", pp, tg, (double) tg / cycles);
             } else {
                 printf("%s", tokenizer_id_to_token(t, next));
                 fflush(stdout);
