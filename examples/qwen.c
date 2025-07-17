@@ -1969,6 +1969,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
     }
 
     free(ids);
+    chat_context_free(assistant);
     chat_context_free(ctx);
 }
 
