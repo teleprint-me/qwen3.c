@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <sys/time.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <stdint.h>
@@ -1887,6 +1888,12 @@ void chat_input(const char* prompt, char* buffer, size_t bufsize) {
     }
 }
 
+static inline uint64_t time_now_ms(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 void chat_completion(Qwen* qwen, Options* opts) {
     fprintf(stderr, "[ChatCompletion]\n");
 
@@ -1935,7 +1942,11 @@ void chat_completion(Qwen* qwen, Options* opts) {
             chat_append_user(ctx, qwen->tokenizer, user_input, opts->thinking);
 
             // encode entire context
+            uint64_t start = time_now_ms();
+            fprintf(stderr, "[Profile] Prompt processing: start -> %lu ms\n", start);
             tokenizer_encode(qwen->tokenizer, ctx->buffer, ids, &n_ids);
+            fprintf(stderr, "[Profile] Prompt processing: end -> %lu ms\n", time_now_ms() - start);
+
             user_id = 0;
             user_turn = 0;
         }
