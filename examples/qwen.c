@@ -1772,7 +1772,7 @@ void completion(Qwen* qwen, Options* opts) {
 typedef struct ChatContext {
     char* buffer; // growing UTF-8 string (conversation so far)
     size_t capacity; // max allowed (MAX_SEQ_LEN)
-    size_t length; // current used length
+    size_t size; // current size
 } ChatContext;
 
 ChatContext* chat_context_create(size_t max_seq_len) {
@@ -1787,7 +1787,7 @@ ChatContext* chat_context_create(size_t max_seq_len) {
     }
 
     ctx->capacity = max_seq_len;
-    ctx->length = 0;
+    ctx->size = 0;
     return ctx;
 }
 
@@ -1797,7 +1797,7 @@ bool chat_context_reset(ChatContext* ctx) {
     }
 
     memset(ctx->buffer, 0, ctx->capacity);
-    ctx->length = 0;
+    ctx->size = 0;
     return true;
 }
 
@@ -1809,73 +1809,33 @@ void chat_context_free(ChatContext* ctx) {
     free(ctx);
 }
 
-void chat_append_system(ChatContext* ctx, Tokenizer* t, const char* content) {
+void chat_append_system(ChatContext* c, Tokenizer* t, const char* content) {
     const char* eot = tokenizer_id_to_token(t, t->special.eot); // <im_start>
     const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
 
-    char temp[MAX_SEQ_LEN];
-    int size = snprintf(temp, MAX_SEQ_LEN, "%ssystem\n%s%s\n", eot, content, eos);
+    c->size += snprintf(c->buffer, MAX_SEQ_LEN, "%ssystem\n%s%s\n", eot, content, eos);
 
-    if (ctx->length + size >= ctx->capacity) {
-        fprintf(stderr, "[Chat] Context overflow (system).\n");
-        return;
-    }
-
-    memcpy(ctx->buffer + ctx->length, temp, size);
-    ctx->length += size;
-    ctx->buffer[ctx->length] = '\0';
-
-    // fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
+    // fprintf(stderr, "[Chat] buffer (user)\n%s", c->buffer); // debug
 }
 
-void chat_append_user(ChatContext* ctx, Tokenizer* t, const char* content, Thinking think) {
+void chat_append_user(ChatContext* c, Tokenizer* t, Thinking think, const char* content) {
     const char* eot = tokenizer_id_to_token(t, t->special.eot); // <im_start>
     const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
 
-    char temp[MAX_SEQ_LEN];
-    size_t size = 0;
+    // User message
+    c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%suser\n%s%s\n", eot, content, eos);
 
-    // 1. User message
-    size += snprintf(temp + size, MAX_SEQ_LEN - size, "%suser\n%s%s\n", eot, content, eos);
+    // Assistant header
+    c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%sassistant\n", eot);
 
-    // 2. Assistant header
-    size += snprintf(temp + size, MAX_SEQ_LEN - size, "%sassistant\n", eot);
-
-    // 3. Optional reasoning suppression (THINKING_OFF)
+    // Optional reasoning suppression (THINKING_OFF)
     if (THINKING_OFF == think) {
         const char* bor = tokenizer_id_to_token(t, t->special.bor); // <think>
         const char* eor = tokenizer_id_to_token(t, t->special.eor); // </think>
-        size += snprintf(temp + size, MAX_SEQ_LEN - size, "%s\n\n%s\n", bor, eor);
+        c->size += snprintf(c->buffer + c->size, MAX_SEQ_LEN - c->size, "%s\n\n%s\n", bor, eor);
     }
 
-    if (ctx->length + size >= ctx->capacity) {
-        fprintf(stderr, "[Chat] Context overflow (user).\n");
-        return;
-    }
-
-    memcpy(ctx->buffer + ctx->length, temp, size);
-    ctx->length += size;
-    ctx->buffer[ctx->length] = '\0';
-
-    // fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
-}
-
-void chat_append_assistant(ChatContext* ctx, Tokenizer* t, const char* content) {
-    const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
-
-    char temp[MAX_SEQ_LEN];
-    size_t size = snprintf(temp, MAX_SEQ_LEN, "%s%s\n", content, eos);
-
-    if (ctx->length + size >= ctx->capacity) {
-        fprintf(stderr, "[Chat] Context overflow (assistant).\n");
-        return;
-    }
-
-    memcpy(ctx->buffer + ctx->length, temp, size);
-    ctx->length += size;
-    ctx->buffer[ctx->length] = '\0';
-
-    // fprintf(stderr, "[Chat] buffer (assistant)\n%s", temp); // debug
+    // fprintf(stderr, "[Chat] buffer (user)\n%s", c->buffer); // debug
 }
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
@@ -1897,77 +1857,73 @@ static inline uint64_t time_now_ms(void) {
 void chat_completion(Qwen* qwen, Options* opts) {
     fprintf(stderr, "[ChatCompletion]\n");
 
-    ChatContext* ctx = chat_context_create(opts->seq_len);
-    if (!ctx) {
-        fprintf(stderr, "[Chat] Failed to allocate context.\n");
-        return;
-    }
+    Transformer* m = qwen->model;
+    Tokenizer* t = qwen->tokenizer;
+    Sampler* s = qwen->sampler;
 
-    int* ids = malloc(MAX_SEQ_LEN * sizeof(int));
-    if (!ids) {
-        chat_context_free(ctx);
-        return;
-    }
+    char prompt[MAX_SEQ_LEN];
+    ChatContext* c = chat_context_create(opts->seq_len);
 
-    if (opts->system_prompt) {
-        chat_append_system(ctx, qwen->tokenizer, opts->system_prompt);
-    }
+    int user_turn = 1; // user starts
+    int user_id = 0; // user token id
+    int n_ids = 0; // number of token ids
+    int* ids = (int*) malloc(MAX_SEQ_LEN * sizeof(int)); // array of token ids
 
-    char user_input[512];
-    int user_id = 0, user_turn = 1;
-    int n_ids = 0, current = 0, next = 0, pos = 0;
-    uint64_t start = 0;
+    // start the main loop
+    int current = 0; // stores the current token to feed into the transformer
+    int next = 0; // will store the next token in the sequence
+    int pos = 0; // position in the sequence
 
     while (1) {
-        if (pos >= qwen->model->params.seq_len) {
-            pos = 0;
-            user_id = 0;
+        // if context window is exceeded, clear it
+        if (pos >= m->params.seq_len) {
             user_turn = 1;
-            chat_context_reset(ctx);
-            if (opts->system_prompt) {
-                chat_append_system(ctx, qwen->tokenizer, opts->system_prompt);
-            }
+            pos = 0;
         }
 
+        // when it is the user's turn to contribute tokens to the dialog...
         if (user_turn) {
-            chat_input("\n> ", user_input, sizeof(user_input));
-            if (!user_input[0]) {
+            chat_context_reset(c);
+
+            // get the user prompt from stdin
+            chat_input("\n> ", prompt, sizeof(prompt));
+            // terminate if user enters a blank prompt
+            if (!*prompt) {
                 break;
             }
 
-            chat_append_user(ctx, qwen->tokenizer, user_input, opts->thinking);
+            // Optional system prompt (NULL or a valid string)
+            if (pos == 0 && opts->system_prompt) {
+                chat_append_system(c, t, opts->system_prompt);
+            } 
 
-            // encode entire context
-            start = time_now_ms(); // debug
-            fprintf(stderr, "[Profile] Prompt processing ");
+            chat_append_user(c, t, opts->thinking, prompt);
 
-            tokenizer_encode(qwen->tokenizer, ctx->buffer, ids, &n_ids);
-            
-            fprintf(stderr, "%lu ms\n", time_now_ms() - start);
-
-            user_id = 0;
+            // encode the rendered prompt into tokens
+            tokenizer_encode(t, c->buffer, ids, &n_ids);
+            user_id = 0; // reset the user index
             user_turn = 0;
         }
 
         current = (user_id < n_ids) ? ids[user_id++] : next;
-        float* logits = forward(qwen->model, current, pos);
-        next = sample(qwen->sampler, logits);
+        float* logits = forward(m, current, pos);
+        next = sample(s, logits);
         pos++;
 
+        // assistant is responding
         if (user_id >= n_ids) {
-            if (next == qwen->tokenizer->special.eos) {
+            if (next == t->special.bos || next == t->special.eos) {
                 printf("\n");
                 user_turn = 1;
             } else {
-                const char* token = tokenizer_id_to_token(qwen->tokenizer, next);
-                printf("%s", token);
+                printf("%s", tokenizer_id_to_token(t, next));
                 fflush(stdout);
             }
         }
     }
 
     free(ids);
-    chat_context_free(ctx);
+    chat_context_free(c);
 }
 
 /** @} */
