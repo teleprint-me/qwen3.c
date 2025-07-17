@@ -1903,11 +1903,6 @@ void chat_completion(Qwen* qwen, Options* opts) {
         return;
     }
 
-    ChatContext* assistant = chat_context_create(opts->seq_len);
-    if (!assistant) {
-        fprintf(stderr, "[Chat] Failed to allocated assistant buffer.\n");
-    }
-
     int* ids = malloc(MAX_SEQ_LEN * sizeof(int));
     if (!ids) {
         chat_context_free(ctx);
@@ -1921,6 +1916,7 @@ void chat_completion(Qwen* qwen, Options* opts) {
     char user_input[512];
     int user_id = 0, user_turn = 1;
     int n_ids = 0, current = 0, next = 0, pos = 0;
+    uint64_t start = 0;
 
     while (1) {
         if (pos >= qwen->model->params.seq_len) {
@@ -1942,10 +1938,12 @@ void chat_completion(Qwen* qwen, Options* opts) {
             chat_append_user(ctx, qwen->tokenizer, user_input, opts->thinking);
 
             // encode entire context
-            uint64_t start = time_now_ms();
-            fprintf(stderr, "[Profile] Prompt processing: start -> %lu ms\n", start);
+            start = time_now_ms(); // debug
+            fprintf(stderr, "[Profile] Prompt processing ");
+
             tokenizer_encode(qwen->tokenizer, ctx->buffer, ids, &n_ids);
-            fprintf(stderr, "[Profile] Prompt processing: end -> %lu ms\n", time_now_ms() - start);
+            
+            fprintf(stderr, "%lu ms\n", time_now_ms() - start);
 
             user_id = 0;
             user_turn = 0;
@@ -1960,27 +1958,15 @@ void chat_completion(Qwen* qwen, Options* opts) {
             if (next == qwen->tokenizer->special.eos) {
                 printf("\n");
                 user_turn = 1;
-
-                // finalize assistant turn (add <im_end>)
-                chat_append_assistant(ctx, qwen->tokenizer, assistant->buffer);
-                chat_context_reset(assistant);
             } else {
                 const char* token = tokenizer_id_to_token(qwen->tokenizer, next);
                 printf("%s", token);
                 fflush(stdout);
-
-                size_t token_len = strlen(token);
-                if (assistant->length + token_len < assistant->capacity) {
-                    memcpy(assistant->buffer + assistant->length, token, token_len);
-                    assistant->length += token_len;
-                    assistant->buffer[assistant->length] = '\0';
-                }
             }
         }
     }
 
     free(ids);
-    chat_context_free(assistant);
     chat_context_free(ctx);
 }
 
