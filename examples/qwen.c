@@ -710,7 +710,7 @@ void softmax(float* x, int size) {
     for (int i = 1; i < size; i++) {
         // debug
         if (isnan(x[i]) || isinf(x[i])) {
-            fprintf(stderr, "[Softmax] ⚠️  Invalid input: x[%d] = %f\n", i, x[i]);
+            fprintf(stderr, "[Softmax] ⚠️ Invalid input: x[%d] = %f\n", i, x[i]);
         }
 
         if (x[i] > max_val) {
@@ -1823,6 +1823,8 @@ void chat_append_system(ChatContext* ctx, Tokenizer* t, const char* content) {
     memcpy(ctx->buffer + ctx->length, temp, size);
     ctx->length += size;
     ctx->buffer[ctx->length] = '\0';
+
+    fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
 }
 
 void chat_append_user(ChatContext* ctx, Tokenizer* t, const char* content, Thinking think) {
@@ -1854,7 +1856,25 @@ void chat_append_user(ChatContext* ctx, Tokenizer* t, const char* content, Think
     ctx->length += size;
     ctx->buffer[ctx->length] = '\0';
 
-    fprintf(stderr, "[Chat] buffer\n%s", temp); // debug
+    fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
+}
+
+void chat_append_assistant(ChatContext* ctx, Tokenizer* t, const char* content) {
+    const char* eos = tokenizer_id_to_token(t, t->special.eos); // <im_end>
+
+    char temp[MAX_SEQ_LEN];
+    size_t size = snprintf(temp, MAX_SEQ_LEN, "%s%s\n", content, eos);
+
+    if (ctx->length + size >= ctx->capacity) {
+        fprintf(stderr, "[Chat] Context overflow (assistant).\n");
+        return;
+    }
+
+    memcpy(ctx->buffer + ctx->length, temp, size);
+    ctx->length += size;
+    ctx->buffer[ctx->length] = '\0';
+
+    fprintf(stderr, "[Chat] buffer (assistant)\n%s", temp); // debug
 }
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
@@ -1876,25 +1896,34 @@ void chat_completion(Qwen* qwen, Options* opts) {
         return;
     }
 
+    ChatContext* assistant = chat_context_create(opts->seq_len);
+    if (!assistant) {
+        fprintf(stderr, "[Chat] Failed to allocated assistant buffer.\n");
+    }
+
     int* ids = malloc(MAX_SEQ_LEN * sizeof(int));
     if (!ids) {
         chat_context_free(ctx);
         return;
     }
 
-    // Add system prompt once
     if (opts->system_prompt) {
         chat_append_system(ctx, qwen->tokenizer, opts->system_prompt);
     }
 
     char user_input[512];
     int user_id = 0, user_turn = 1;
-    int n_ids = 0, token = 0, next = 0, pos = 0;
+    int n_ids = 0, current = 0, next = 0, pos = 0;
 
     while (1) {
         if (pos >= qwen->model->params.seq_len) {
+            pos = 0;
+            user_id = 0;
+            user_turn = 1;
             chat_context_reset(ctx);
-            continue;
+            if (opts->system_prompt) {
+                chat_append_system(ctx, qwen->tokenizer, opts->system_prompt);
+            }
         }
 
         if (user_turn) {
@@ -1911,8 +1940,8 @@ void chat_completion(Qwen* qwen, Options* opts) {
             user_turn = 0;
         }
 
-        token = (user_id < n_ids) ? ids[user_id++] : next;
-        float* logits = forward(qwen->model, token, pos);
+        current = (user_id < n_ids) ? ids[user_id++] : next;
+        float* logits = forward(qwen->model, current, pos);
         next = sample(qwen->sampler, logits);
         pos++;
 
@@ -1922,12 +1951,19 @@ void chat_completion(Qwen* qwen, Options* opts) {
                 user_turn = 1;
 
                 // finalize assistant turn (add <im_end>)
-                const char* eos = tokenizer_id_to_token(qwen->tokenizer, qwen->tokenizer->special.eos);
-                snprintf(ctx->buffer + ctx->length, ctx->capacity - ctx->length, "%s\n", eos);
-                ctx->length += strlen(eos) + 1;
+                chat_append_assistant(ctx, qwen->tokenizer, assistant->buffer);
+                chat_context_reset(assistant);
             } else {
-                printf("%s", tokenizer_id_to_token(qwen->tokenizer, next));
+                const char* token = tokenizer_id_to_token(qwen->tokenizer, next);
+                printf("%s", token);
                 fflush(stdout);
+
+                size_t token_len = strlen(token);
+                if (assistant->length + token_len < assistant->capacity) {
+                    memcpy(assistant->buffer + assistant->length, token, token_len);
+                    assistant->length += token_len;
+                    assistant->buffer[assistant->length] = '\0';
+                }
             }
         }
     }
