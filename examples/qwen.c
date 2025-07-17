@@ -1824,7 +1824,7 @@ void chat_append_system(ChatContext* ctx, Tokenizer* t, const char* content) {
     ctx->length += size;
     ctx->buffer[ctx->length] = '\0';
 
-    fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
+    // fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
 }
 
 void chat_append_user(ChatContext* ctx, Tokenizer* t, const char* content, Thinking think) {
@@ -1856,7 +1856,7 @@ void chat_append_user(ChatContext* ctx, Tokenizer* t, const char* content, Think
     ctx->length += size;
     ctx->buffer[ctx->length] = '\0';
 
-    fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
+    // fprintf(stderr, "[Chat] buffer (user)\n%s", temp); // debug
 }
 
 void chat_append_assistant(ChatContext* ctx, Tokenizer* t, const char* content) {
@@ -1874,7 +1874,7 @@ void chat_append_assistant(ChatContext* ctx, Tokenizer* t, const char* content) 
     ctx->length += size;
     ctx->buffer[ctx->length] = '\0';
 
-    fprintf(stderr, "[Chat] buffer (assistant)\n%s", temp); // debug
+    // fprintf(stderr, "[Chat] buffer (assistant)\n%s", temp); // debug
 }
 
 void chat_input(const char* prompt, char* buffer, size_t bufsize) {
