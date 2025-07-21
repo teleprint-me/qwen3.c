@@ -23,7 +23,6 @@
 #include <sys/time.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <ctype.h>
 #include <stdint.h>
 #include <time.h>
 #include <math.h>
