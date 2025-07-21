@@ -5,7 +5,6 @@
 #include "tokenizer.h"
 
 #include <stdint.h>
-#include <string.h>
 #include <stdio.h>
 
 #define MAX_TOKENS 4096
@@ -16,8 +15,8 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
 
-    const char* model_path = argv[1];
-    Tokenizer* tokenizer = tokenizer_create(model_path, 0);
+    const char* model_prefix = argv[1];
+    Tokenizer* tokenizer = tokenizer_create(model_prefix);
     if (!tokenizer) {
         fprintf(stderr, "[Tokenizer] Failed to load tokenizer.\n");
         return 1;

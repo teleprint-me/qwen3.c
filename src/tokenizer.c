@@ -9,74 +9,12 @@
 #include <stdio.h>
 
 /**
- * @section Tokenizer: Chat Template
+ * @section Tokenizer: BPE (Byte-pair Encoding) NFC (Normalization Form
+ * Canonical Composition)
  * @{
  */
 
-Template* template_create(const char* in_file, int enable_system, int enable_thinking) {
-    const char* suffix = NULL;
-    if (enable_system) {
-        suffix = enable_thinking ? ".template.with-system-and-thinking" : ".template.with-system";
-    } else {
-        suffix = enable_thinking ? ".template.with-thinking" : ".template";
-    }
-
-    // Construct full file path
-    size_t len = strlen(in_file) + strlen(suffix);
-    char* file_path = calloc(len + 1, 1);
-    if (!file_path) {
-        return NULL;
-    }
-
-    memcpy(file_path, in_file, strlen(in_file));
-    memcpy(file_path + strlen(in_file), suffix, strlen(suffix));
-    file_path[len] = '\0';
-
-    FILE* file = fopen(file_path, "rb");
-    free(file_path); // cleanup here is safe
-    if (!file) {
-        return NULL;
-    }
-
-    fseek(file, 0, SEEK_END);
-    ssize_t size = ftell(file);
-    rewind(file);
-
-    Template* template = calloc(1, sizeof(Template));
-    if (!template) {
-        fclose(file);
-        return NULL;
-    }
-
-    template->size = size;
-    template->data = calloc(size + 1, 1); // null-terminate for convenience
-    if (!template->data) {
-        fclose(file);
-        free(template);
-        return NULL;
-    }
-
-    fread(template->data, 1, size, file);
-    fclose(file);
-    return template;
-}
-
-void template_free(Template* t) {
-    if (!t) {
-        return;
-    }
-    free(t->data);
-    free(t);
-}
-
-/** @} */
-
-/**
- * @section Tokenizer: BPE (Byte-pair Encoding) NFC (Normalization Form Canonical Composition)
- * @{
- */
-
-Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
+Tokenizer* tokenizer_create(const char* in_file) {
     // Build file path for .tokenizer
     const char* suffix = ".tokenizer";
     size_t len = strlen(in_file) + strlen(suffix);
@@ -96,31 +34,28 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
     }
     free(file_path);
 
-    // Read header
-    uint32_t magic = 0;
-    int32_t version = 0;
-    fread(&magic, sizeof(uint32_t), 1, file);
-    fread(&version, sizeof(int32_t), 1, file);
-
-    if (QTKN_MAGIC != magic || QTKN_VERSION != version) {
-        fprintf(stderr, "[Tokenizer] Invalid tokenizer format.\n");
-        fclose(file);
-        return NULL;
-    }
-
     Tokenizer* t = calloc(1, sizeof(Tokenizer));
     if (!t) {
         fclose(file);
         return NULL;
     }
 
-    fread(&t->vocab_size, sizeof(int32_t), 1, file);
-    fread(&t->max_token_length, sizeof(int32_t), 1, file);
-    fread(&t->bos_id, sizeof(int32_t), 1, file);
-    fread(&t->eos_id, sizeof(int32_t), 1, file);
+    // Read header
+    fread(&t->magic, sizeof(uint32_t), 1, file);
+    fread(&t->version, sizeof(int32_t), 1, file);
 
-    t->tokens = calloc(t->vocab_size, sizeof(Token));
-    if (!t->tokens) {
+    if (QTKN_MAGIC != t->magic || QTKN_VERSION != t->version) {
+        fprintf(stderr, "[Tokenizer] Invalid tokenizer format.\n");
+        fclose(file);
+        return NULL;
+    }
+
+    fread(&t->vocab_size, sizeof(int32_t), 1, file);
+    fread(&t->max_len, sizeof(int32_t), 1, file);
+    fread(&t->special, sizeof(TokenSpecial), 1, file);
+
+    t->entries = calloc(t->vocab_size, sizeof(TokenEntry));
+    if (!t->entries) {
         fclose(file);
         free(t);
         return NULL;
@@ -135,9 +70,9 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
             fprintf(stderr, "[Tokenizer] Score read error at index %d\n", i);
             fclose(file);
             for (int k = 0; k < i; k++) {
-                free(t->tokens[k].entry);
+                free(t->entries[k].token);
             }
-            free(t->tokens);
+            free(t->entries);
             free(t);
             return NULL;
         }
@@ -146,9 +81,9 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
             fprintf(stderr, "[Tokenizer] Length read error at index %d\n", i);
             fclose(file);
             for (int k = 0; k < i; k++) {
-                free(t->tokens[k].entry);
+                free(t->entries[k].token);
             }
-            free(t->tokens);
+            free(t->entries);
             free(t);
             return NULL;
         }
@@ -161,30 +96,27 @@ Tokenizer* tokenizer_create(const char* in_file, int enable_thinking) {
             }
             fclose(file);
             for (int k = 0; k < i; k++) {
-                free(t->tokens[k].entry);
+                free(t->entries[k].token);
             }
-            free(t->tokens);
+            free(t->entries);
             free(t);
             return NULL;
         }
 
         buffer[length] = '\0';
-        t->tokens[i].score = score;
-        t->tokens[i].entry = buffer;
+        t->entries[i].score = score;
+        t->entries[i].token = buffer;
     }
 
     fclose(file);
 
-    // Load prompt templates
-    t->prompt = template_create(in_file, 0, enable_thinking);
-    t->system = template_create(in_file, 1, enable_thinking);
-
-    fprintf(stderr, "[Tokenizer] bos_id=%d\n", t->bos_id);
-    fprintf(stderr, "[Tokenizer] eos_id=%d\n", t->eos_id);
+    fprintf(stderr, "[Tokenizer] magic=%x\n", t->magic);
+    fprintf(stderr, "[Tokenizer] version=%d\n", t->version);
     fprintf(stderr, "[Tokenizer] vocab_size=%d\n", t->vocab_size);
-    fprintf(stderr, "[Tokenizer] max_token_length=%d\n", t->max_token_length);
-    fprintf(stderr, "[Tokenizer] prompt\n%s\n", t->prompt->data);
-    fprintf(stderr, "[Tokenizer] system\n%s\n", t->system->data);
+    fprintf(stderr, "[Tokenizer] max_len=%d\n", t->max_len);
+    fprintf(stderr, "[Tokenizer] bos=%d\n", t->special.bos);
+    fprintf(stderr, "[Tokenizer] eos=%d\n", t->special.eos);
+    fprintf(stderr, "[Tokenizer] eot=%d\n", t->special.eot);
 
     return t;
 }
@@ -194,11 +126,9 @@ void tokenizer_free(Tokenizer* t) {
         return;
     }
     for (int i = 0; i < t->vocab_size; i++) {
-        free(t->tokens[i].entry);
+        free(t->entries[i].token);
     }
-    free(t->tokens);
-    template_free(t->prompt);
-    template_free(t->system);
+    free(t->entries);
     free(t);
 }
 
@@ -210,35 +140,34 @@ void tokenizer_free(Tokenizer* t) {
  */
 
 char* tokenizer_id_to_token(Tokenizer* t, int id) {
-    if (!t || id < 0 || id >= t->vocab_size) {
-        fprintf(stderr, "[tokenizer_id_to_token] ERROR: Invalid id! %d\n", id);
+    if (!t || !t->entries || id < 0 || id >= t->vocab_size) {
+        fprintf(stderr, "[Tokenizer] ERROR: Invalid id! %d\n", id);
         return NULL;
     }
-    return t->tokens[id].entry;
+    return t->entries[id].token;
 }
 
 int tokenizer_token_to_id(Tokenizer* t, const char* token) {
-    if (!t || !t->tokens || !token) {
-        fprintf(stderr, "[tokenizer_token_to_id] ERROR: Invalid token! %s\n", token);
+    if (!t || !t->entries || !token) {
+        fprintf(stderr, "[Tokenizer] ERROR: Invalid token! %s\n", token);
         return -1;
     }
 
     // find a match for str in vocab, return its index or -1 if not found
     for (int i = 0; i < t->vocab_size; i++) {
-        if (!t->tokens[i].entry) {
+        if (!t->entries[i].token) {
             fprintf(
                 stderr,
-                "[tokenizer_token_to_id] Error: Malformed entry! "
-                "i=%d, tokens=%p, entry=%s, score=%f\n",
-                i,
-                t->tokens[i],
-                t->tokens[i].entry,
-                t->tokens[i].score
+                "[Tokenizer] Error: Malformed entry! "
+                "i=%d, token=%s, score=%f\n",
+                (int) i,
+                (char*) t->entries[i].token,
+                (double) t->entries[i].score
             );
             return -1;
         }
 
-        if (0 == strcmp(token, t->tokens[i].entry)) {
+        if (0 == strcmp(token, t->entries[i].token)) {
             return i;
         }
     }
@@ -254,7 +183,7 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
  */
 
 static int tokenizer_find_special_token(Tokenizer* t, char* start, char* out) {
-    for (int k = 0; start[k] && k < t->max_token_length; ++k) {
+    for (int k = 0; start[k] && k < t->max_len; ++k) {
         if (start[k] == '>') {
             int n_bytes = k + 1; // number of bytes consumed
             strncpy(out, start, n_bytes);
@@ -271,7 +200,7 @@ static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
 
     while (*bytes) {
         int id = -1;
-        char token[t->max_token_length];
+        char token[t->max_len];
         token[0] = '\0';
 
         if (*bytes == '<') {
@@ -293,7 +222,12 @@ static int tokenizer_find_token_ids(Tokenizer* t, char* start, int* out) {
         if (id != -1) {
             out[(n_ids)++] = id;
         } else {
-            fprintf(stderr, "Warning: Unknown character `%c` (codepoint %d)\n", token[0], token[0]);
+            fprintf(
+                stderr,
+                "[Tokenizer] Warning: Unknown character `%c` (codepoint %d)\n",
+                token[0],
+                token[0]
+            );
         }
     }
 
@@ -310,15 +244,15 @@ static int tokenizer_find_best_merge(
     for (int i = 0; i < n_ids - 1; ++i) {
         snprintf(
             buf,
-            t->max_token_length * 2 + 1,
+            t->max_len * 2 + 1,
             "%s%s",
-            t->tokens[ids[i]].entry,
-            t->tokens[ids[i + 1]].entry
+            t->entries[ids[i]].token,
+            t->entries[ids[i + 1]].token
         );
 
         int merged_id = tokenizer_token_to_id(t, buf);
-        if (merged_id != -1 && t->tokens[merged_id].score > best_score) {
-            best_score = t->tokens[merged_id].score;
+        if (merged_id != -1 && t->entries[merged_id].score > best_score) {
+            best_score = t->entries[merged_id].score;
             best_id = merged_id;
             best_idx = i;
         }
@@ -334,15 +268,21 @@ static int tokenizer_find_best_merge(
 }
 
 void tokenizer_merge_token_ids(Tokenizer* t, int* ids, int* n_ids) {
-    char* buffer = malloc(t->max_token_length * 2 + 1);
+    char* buffer = malloc(t->max_len * 2 + 1);
     while (1) {
         int best_id, best_idx;
-        if (!tokenizer_find_best_merge(t, ids, *n_ids, buffer, &best_id, &best_idx)) {
+        if (!tokenizer_find_best_merge(
+                t, ids, *n_ids, buffer, &best_id, &best_idx
+            )) {
             break;
         }
 
         ids[best_idx] = best_id;
-        memmove(&ids[best_idx + 1], &ids[best_idx + 2], (*n_ids - best_idx - 2) * sizeof(int));
+        memmove(
+            &ids[best_idx + 1],
+            &ids[best_idx + 2],
+            (*n_ids - best_idx - 2) * sizeof(int)
+        );
         (*n_ids)--;
     }
     free(buffer);
