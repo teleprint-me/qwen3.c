@@ -1,5 +1,5 @@
 /**
- * @file include/checkpoint.h
+ * @file include/model.h
  *
  * Qwen3 has the following features:
  *   - Type: Causal Language Models
@@ -7,36 +7,40 @@
  *   - Number of Parameters: 0.6B, 1.7B, and 4B
  *   - Number of Embedding Parameters: ~0.4B
  *   - Number of Layers: 0.6B/1.7B -> 28, 4B -> 36
- *   - Number of Attention Heads (GQA): 0.6B/1.7B -> 16 for Q, 4B -> 32 for Q, always 8 for KV
+ *   - Number of Attention Heads (GQA): 0.6B/1.7B -> 16 for Q, 4B -> 32 for Q,
+ * always 8 for KV
  *   - Context Length: 32768 natively and 131072 tokens with YaRN.
  *
  * @ref https://huggingface.co/collections/Qwen/qwen3-67dd247413f0e2e4f653967f
  */
 
-#ifndef QWEN_CKPT_H
-#define QWEN_CKPT_H
+#ifndef QWEN_MODEL_H
+#define QWEN_MODEL_H
 
 #include "q8.h"
 #include <sys/types.h>
+
+#define QWEN_MAGIC 0x7177656E
+#define QWEN_VERSION 1
 
 /**
  * CONFIGURATION
  */
 
-typedef struct Params {
-    int magic_number; // checkpoint magic number ("qwen")
+typedef struct ModelParams {
+    int magic; // checkpoint magic number
     int version; // file format version
-    int dim; // transformer width (e.g. 2048)
-    int hidden_dim; // FFN inner dimension (e.g. 6144)
-    int n_layers; // number of transformer layers
-    int n_heads; // number of attention heads
-    int n_kv_heads; // number of key/value heads (multiquery if < n_heads)
-    int vocab_size; // number of tokens in vocabulary
-    int seq_len; // maximum sequence length (e.g. 40960)
-    int head_dim; // dimension per head
-    int shared_classifier; // if true, cls = token embedding weights
-    int group_size; // quantization group size (typically 64)
-} Params;
+    int dim; // transformer dimension
+    int hidden_dim; // for ffn layers
+    int n_layers; // number of layers
+    int n_heads; // number of query heads
+    int n_kv_heads; // number of key/value heads (multiquery)
+    int vocab_size; // vocabulary size, usually 256 (byte-level)
+    int seq_len; // max sequence length
+    int head_dim; // head dimension
+    int shared_classifier; // 1 if cls == p_tokens
+    int block_size; // quantization block size (weights.py uses 64)
+} ModelParams;
 
 /**
  * WEIGHTS
@@ -46,8 +50,9 @@ typedef struct Params {
  * Note: weights.* fields are either:
  *   - Arrays of Q8Tensors, one per layer
  *   - Flat fp32 arrays (e.g. for norms)
+ *   - Formatted as weights.wq[layer] → Q8Tensor {q, s}
  */
-typedef struct Weights {
+typedef struct ModelWeights {
     // Attention weights
     Q8Tensor* wq; // (n_layers, dim, n_heads * head_dim)
     Q8Tensor* wk; // (n_layers, dim, n_kv_heads * head_dim)
@@ -59,8 +64,8 @@ typedef struct Weights {
     Q8Tensor* w2; // (n_layers, dim, hidden_dim)
     Q8Tensor* w3; // (n_layers, hidden_dim, dim)
 
-    // Output classifier (optional)
-    Q8Tensor* cls; // (vocab_size, dim) or NULL if shared
+    // (optional) classifier weights for the logits, on the last layer
+    Q8Tensor* cls;
 
     // Token embedding
     Q8Tensor* qe; // quantized embedding (vocab_size, dim)
@@ -71,10 +76,10 @@ typedef struct Weights {
     float* ffn_rms_norm; // (n_layers, dim)
     float* out_rms_norm; // (dim)
 
-    // Qwen3 layernorms for Q and K
-    float* q_rms_norm; // (n_layers, head_dim)
-    float* k_rms_norm; // (n_layers, head_dim)
-} Weights;
+    // QK-RMSNorm for Qwen3
+    float* q_rms_norm;
+    float* k_rms_norm;
+} ModelWeights;
 
 /**
  * STATE
@@ -84,16 +89,16 @@ typedef struct Weights {
  * Scratch space reused across the forward pass.
  * Buffers are overwritten at each layer.
  */
-typedef struct State {
+typedef struct ForwardState {
     // Residual stream
     float* x; // Persistent residual (dim)
-    float* x_rms_norm; // RMSNorm(x), reused in att and ffn (n_heads * head_dim)
+    float* x_rms_norm; // RMSNorm(x) (n_heads * head_dim)
 
     // Attention workspace
     float* q; // Query (n_heads * head_dim)
     float* k; // Key   (n_kv_heads * head_dim)
     float* v; // Value (n_kv_heads * head_dim)
-    float* att_scores; // Attention scores (n_heads * seq_len)
+    float* scores; // Attention scores (n_heads * seq_len)
 
     // Feed-forward network
     float* mlp_in; // w1(x) = mlp_in (hidden_dim)
@@ -109,19 +114,19 @@ typedef struct State {
     // Quantized buffers
     Q8Tensor qx; // Quantized input to attention (dim)
     Q8Tensor qh; // Quantized input to FFN (hidden_dim)
-} State;
+} ForwardState;
 
 /**
  * TRANSFORMER
  */
 
-typedef struct Transformer {
-    void* model; // read-only pointer to memory-mapped model file
-    Params params; // model architecture + hyperparameters
-    Weights weights; // model weights (quantized + fp32 norms)
-    State state; // forward pass scratch space
+typedef struct Model {
+    ModelParams params; // model architecture + hyperparameters
+    ModelWeights weights; // model weights (quantized + fp32 norms)
+    ForwardState state; // forward pass scratch space
+    void* data; // read-only pointer to memory-mapped model file
     ssize_t size; // size of the memory-mapped model file
-} Transformer;
+} Model;
 
 /**
  * @brief Construct a Transformer model from a memory-mapped checkpoint file.
@@ -141,10 +146,11 @@ typedef struct Transformer {
  * The pointer must be released using `transformer_free()` to avoid leaks.
  *
  * @param path              Path to the checkpoint file on disk.
- * @param override_seq_len  Optional context length override (0 to use checkpoint default).
+ * @param override_seq_len  Optional context length override (0 to use
+ * checkpoint default).
  * @return Pointer to a fully constructed Transformer, or NULL on failure.
  */
-Transformer* transformer_create(const char* path, int override_seq_len);
+Model* model_create(const char* path, int override_seq_len);
 
 /**
  * @brief Frees all memory associated with a Transformer model.
@@ -157,8 +163,8 @@ Transformer* transformer_create(const char* path, int override_seq_len);
  *
  * Safe to call on NULL.
  *
- * @param t Pointer to a Transformer created by `transformer_create`.
+ * @param m Pointer to a Transformer created by `transformer_create`.
  */
-void transformer_free(Transformer* t);
+void model_free(Model* m);
 
-#endif // QWEN_CKPT_H
+#endif // QWEN_MODEL_H

@@ -1,7 +1,7 @@
 # examples
 set(EXAMPLES
-    "weights"
     "tokenizer"
+    "model"
 )
 
 set(INPUT_DIR ${PROJECT_SOURCE_DIR}/examples)

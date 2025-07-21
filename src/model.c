@@ -1,11 +1,11 @@
-/// @file src/checkpoint.c
-#include "checkpoint.h"
+/// @file src/model.c
+#include "model.h"
 #include <assert.h>
 #include <stdbool.h>
-#include <stdlib.h>
-#include <sys/mman.h>
-#include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
 
 /**
  * @defgroup Private Interface
@@ -16,7 +16,7 @@
  * @section Model Checkpoint
  */
 
-bool model_read_checkpoint(Transformer* t, const char* path) {
+bool model_file_mmap(Model* m, const char* path) {
     FILE* file = fopen(path, "rb");
     if (!file) {
         goto open_failure;
@@ -26,13 +26,13 @@ bool model_read_checkpoint(Transformer* t, const char* path) {
         goto read_failure;
     }
 
-    t->size = ftell(file);
-    if (-1 == t->size) {
+    m->size = ftell(file);
+    if (-1 == m->size) {
         goto read_failure;
     }
 
-    t->model = mmap(NULL, t->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
-    if (!t->model) {
+    m->data = mmap(NULL, m->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
+    if (!m->data) {
         goto read_failure;
     }
 
@@ -54,22 +54,40 @@ open_failure:
 
 /// @todo Consolidate repeated calculations into params.
 /// @note These should only be done once during initialization.
-///       Otherwise the repeated computations just compound one another over time.
-bool model_read_params(Transformer* t, int override_seq_len) {
-    if (!t) {
+///       Otherwise the repeated computations just compound one another over
+///       time.
+bool model_params_mmap(Model* m, int override_seq_len) {
+    if (!m) {
         return false;
     }
 
-    memcpy(&t->params, t->model, sizeof(Params));
-    if (0x7177656E != t->params.magic_number || 1 != t->params.version) {
+    memcpy(&m->params, m->data, sizeof(ModelParams));
+    if (QWEN_MAGIC != m->params.magic || QWEN_VERSION != m->params.version) {
         return false;
     }
 
-    if (override_seq_len && override_seq_len <= t->params.seq_len) {
-        t->params.seq_len = override_seq_len;
+    if (override_seq_len && override_seq_len <= m->params.seq_len) {
+        m->params.seq_len = override_seq_len;
     }
 
-    GS = t->params.group_size;
+    const int padding = 256;
+    m->data = ((char*) m->data) + padding;  // add alignment to weights
+
+    fprintf(stderr, "[Params] magic=%x\n", m->params.magic);
+    fprintf(stderr, "[Params] version=%d\n", m->params.version);
+    fprintf(stderr, "[Params] hidden_size=%d\n", m->params.dim);
+    fprintf(stderr, "[Params] intermediate_size=%d\n", m->params.hidden_dim);
+    fprintf(stderr, "[Params] num_hidden_layers=%d\n", m->params.n_layers);
+    fprintf(stderr, "[Params] num_attention_heads=%d\n", m->params.n_heads);
+    fprintf(stderr, "[Params] num_kv_heads=%d\n", m->params.n_kv_heads);
+    fprintf(stderr, "[Params] vocab_size=%d\n", m->params.vocab_size);
+    fprintf(stderr, "[Params] seq_len=%d\n", m->params.seq_len);
+    fprintf(stderr, "[Params] head_dim=%d\n", m->params.head_dim);
+    fprintf(
+        stderr, "[Params] shared_classifier=%d\n", m->params.shared_classifier
+    );
+    fprintf(stderr, "[Params] block_size=%d\n", m->params.block_size);
+
     return true;
 }
 
@@ -78,18 +96,19 @@ bool model_read_params(Transformer* t, int override_seq_len) {
  */
 
 /**
- * @brief Initialize and allocate quantized and fp32 weight tensors from memory-mapped stream.
+ * @brief Initialize and allocate quantized and fp32 weight tensors from
+ * memory-mapped stream.
  *
- * This function assumes `stream` points to a contiguous memory-mapped model checkpoint.
- * All fp32 weights (e.g. RMSNorm parameters) are read first, then the quantized tensors
- * are constructed using `q8_tensor`, which allocates memory internally and adjusts the stream
- * pointer.
+ * This function assumes `stream` points to a contiguous memory-mapped model
+ * checkpoint. All fp32 weights (e.g. RMSNorm parameters) are read first, then
+ * the quantized tensors are constructed using `q8_tensor`, which allocates
+ * memory internally and adjusts the stream pointer.
  *
  * @param t        Pointer to Transformer model.
  * @return true on success, or false on error.
  */
-bool model_read_weights(Transformer* t) {
-    if (!t || !t->model || 0 == t->size) {
+bool model_weights_mmap(Model* m) {
+    if (!m || !m->data || 0 == m->size) {
         return false;
     }
 
@@ -98,9 +117,9 @@ bool model_read_weights(Transformer* t) {
      * These are read directly from the stream without allocation.
      * Layout order must match export script.
      */
-    Params* p = &t->params;
-    Weights* w = &t->weights;
-    float* weights = (float*) t->model;
+    ModelParams* p = &m->params;
+    ModelWeights* w = &m->weights;
+    float* weights = (float*) m->data;
 
     w->att_rms_norm = weights;
     weights += p->n_layers * p->dim;
@@ -119,31 +138,41 @@ bool model_read_weights(Transformer* t) {
 
     /**
      * Advance stream to beginning of quantized weights.
-     * q8_tensor allocates memory for Q8Tensor and updates the stream pointer.
+     * q8_tensor_map allocates memory for Q8Tensor and updates the stream
+     * pointer.
      */
-    t->model = (void*) weights;
+    m->data = (void*) weights;
 
-    // Token embeddings (quantized + dequantized)
-    w->qe = q8_tensor(&t->model, 1, p->vocab_size * p->dim); // allocates internally
-    w->fe = calloc(p->vocab_size * p->dim, sizeof(float)); // explicit malloc (must be freed)
+    // Token embeddings (quantized + dequantized; allocates internally)
+    w->qe = q8_tensor_mmap(&m->data, 1, p->vocab_size * p->dim, p->block_size);
+    // explicit malloc (must be freed)
+    w->fe = calloc(p->vocab_size * p->dim, sizeof(float));
     if (!w->fe) {
         return false;
     }
 
-    q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim);
+    q8_dequantize(w->qe, w->fe, p->vocab_size * p->dim, p->block_size);
 
     /**
      * Attention weights
-     * All tensors are shaped [n_layers, dim * out_features] for consistent layout.
-     * Matmul kernels must handle reshaping internally.
+     * All tensors are shaped [n_layers, dim * out_features] for consistent
+     * layout. Matmul kernels must handle reshaping internally.
      */
     const int proj_dim = p->n_heads * p->head_dim;
     const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->wq = q8_tensor(&t->model, p->n_layers, p->dim * proj_dim);
-    w->wk = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
-    w->wv = q8_tensor(&t->model, p->n_layers, p->dim * kv_dim);
-    w->wo = q8_tensor(&t->model, p->n_layers, proj_dim * p->dim); // [proj, dim] format
+    w->wq = q8_tensor_mmap(
+        &m->data, p->n_layers, p->dim * proj_dim, p->block_size
+    );
+    w->wk = q8_tensor_mmap(
+        &m->data, p->n_layers, p->dim * kv_dim, p->block_size
+    );
+    w->wv = q8_tensor_mmap(
+        &m->data, p->n_layers, p->dim * kv_dim, p->block_size
+    );
+    w->wo = q8_tensor_mmap(
+        &m->data, p->n_layers, proj_dim * p->dim, p->block_size
+    );
 
     /**
      * Feed-forward weights
@@ -151,27 +180,72 @@ bool model_read_weights(Transformer* t) {
      */
     const int hidden_dim = p->hidden_dim;
 
-    w->w1 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w1(x)
-    w->w2 = q8_tensor(&t->model, p->n_layers, hidden_dim * p->dim); // w2(silu ⊙ w3(x))
-    w->w3 = q8_tensor(&t->model, p->n_layers, p->dim * hidden_dim); // w3(x)
+    w->w1 = q8_tensor_mmap(
+        &m->data, p->n_layers, p->dim * hidden_dim, p->block_size
+    );  // w1(x)
+    w->w2 = q8_tensor_mmap(
+        &m->data, p->n_layers, hidden_dim * p->dim, p->block_size
+    );  // w2(silu ⊙ w3(x))
+    w->w3 = q8_tensor_mmap(
+        &m->data, p->n_layers, p->dim * hidden_dim, p->block_size
+    );  // w3(x)
 
     /**
      * Output classifier
      * If shared_classifier is true, reuse token embedding matrix
      * (tied weights). Otherwise, allocate separate output proj_dim.
      */
-    w->cls = p->shared_classifier ? w->qe : q8_tensor(&t->model, 1, p->dim * p->vocab_size);
+    w->cls = p->shared_classifier
+                 ? w->qe
+                 : q8_tensor_mmap(
+                       &m->data, 1, p->dim * p->vocab_size, p->block_size
+                   );
+
+    size_t total_bytes =
+        // FP32 weights
+        p->n_layers * p->dim * 2 * sizeof(float) +  // att + ffn
+        p->dim * sizeof(float) +  // out
+        p->n_layers * p->head_dim * 2 * sizeof(float) +  // q and k
+
+        // Token Embeddings
+        p->vocab_size * p->dim * sizeof(int8_t) +  // qe.q
+        (p->vocab_size * p->dim / p->block_size) * sizeof(float) +  // qe.s
+        p->vocab_size * p->dim * sizeof(float) +  // fe
+
+        // Attention weights
+        2 * p->n_layers * p->dim * proj_dim * sizeof(int8_t) +  // wq, wo (q)
+        2 * p->n_layers * (p->dim * proj_dim / p->block_size) * sizeof(float)
+        +  // wq, wo (s)
+        2 * p->n_layers * p->dim * kv_dim * sizeof(int8_t) +  // wk, wv (q)
+        2 * p->n_layers * (p->dim * kv_dim / p->block_size) * sizeof(float)
+        +  // wk, wv (s)
+
+        // Feedforward weights
+        3 * p->n_layers * p->dim * hidden_dim * sizeof(int8_t)
+        +  // w1, w2, w3 (q)
+        3 * p->n_layers * (p->dim * hidden_dim / p->block_size)
+            * sizeof(float);  // w1, w2, w3 (s)
+
+    if (!p->shared_classifier) {
+        total_bytes += p->dim * p->vocab_size * sizeof(int8_t);  // cls.q
+        total_bytes += (p->dim * p->vocab_size / p->block_size)
+                       * sizeof(float);  // cls.s
+    }
+
+    fprintf(
+        stderr, "[Weights] Allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0)
+    );
 
     return true;
 }
 
-void model_free_weights(Transformer* t) {
-    if (!t) {
+void model_weights_free(Model* m) {
+    if (!m) {
         return;
     }
 
-    Params* p = &t->params;
-    Weights* w = &t->weights;
+    ModelParams* p = &m->params;
+    ModelWeights* w = &m->weights;
     if (!p || !w) {
         return;
     }
@@ -202,35 +276,42 @@ void model_free_weights(Transformer* t) {
  * @section Model State
  */
 
-bool model_create_state(Transformer* t) {
-    if (!t) {
+bool model_state_create(Model* m) {
+    if (!m) {
         return false;
     }
 
-    Params* p = &t->params;
-    State* s = &t->state;
+    ModelParams* p = &m->params;
+    ForwardState* s = &m->state;
     if (!p || !s) {
         return false;
     }
 
-    const int hidden_dim = p->hidden_dim;
-    const int proj_dim = p->n_heads * p->head_dim; // IO Features
+    const int proj_dim = p->n_heads * p->head_dim;  // IO Features
     const int kv_dim = p->n_kv_heads * p->head_dim;
     const uint64_t cache_len = (uint64_t) p->n_layers * p->seq_len * kv_dim;
 
-    assert(0 == proj_dim % GS && "proj_dim must be divisible by GS");
-    assert(0 == hidden_dim % GS && "hidden_dim must be divisible by GS");
-    assert(0 != cache_len && "Empty cache size");
+    assert(
+        0 == proj_dim % p->block_size
+        && "[ForwardState] proj_dim must be divisible by block_size"
+    );
+    assert(
+        0 == p->hidden_dim % p->block_size
+        && "[ForwardState] hidden_dim must be divisible by block_size"
+    );
+    assert(0 != cache_len && "[ForwardState] cache_len must be greater than 0");
 
     // Residual stream and attention output
-    s->x = calloc(p->dim, sizeof(float)); // persistent
-    s->x_rms_norm = calloc(proj_dim, sizeof(float)); // scratch for norm/project
+    s->x = calloc(p->dim, sizeof(float));  // persistent
+    // norm/project
+    s->x_rms_norm = calloc(proj_dim, sizeof(float));  // scratch
 
     // Attention workspace
     s->q = calloc(proj_dim, sizeof(float));
-    s->k = NULL; // s->k and s->v are aliases into slices of k_cache and v_cache
-    s->v = NULL; // They point to the current time step within layer 'l'
-    s->att_scores = calloc(p->n_heads * p->seq_len, sizeof(float));
+    s->k = NULL;  // s->k and s->v are aliases into slices of k_cache and
+                  // v_cache
+    s->v = NULL;  // They point to the current time step within layer 'l'
+    s->scores = calloc(p->n_heads * p->seq_len, sizeof(float));
     s->logits = calloc(p->vocab_size, sizeof(float));
 
     // Key/value memory (shared memory with KV)
@@ -238,44 +319,56 @@ bool model_create_state(Transformer* t) {
     s->v_cache = calloc(cache_len, sizeof(float));
 
     // MLP
-    s->mlp_in = calloc(hidden_dim, sizeof(float));
-    s->mlp_gate = calloc(hidden_dim, sizeof(float));
+    s->mlp_in = calloc(p->hidden_dim, sizeof(float));
+    s->mlp_gate = calloc(p->hidden_dim, sizeof(float));
 
-    // qx.q stores int8_t quantized values of x_rms_norm (proj_dim dim)
-    s->qx.q = calloc(proj_dim, sizeof(int8_t));
-    // qx.s stores per-group scale factors (proj_dim / GS)
-    s->qx.s = calloc(proj_dim / GS, sizeof(float));
+    s->qx = (Q8Tensor) {
+        // int8_t quantized values of x_rms_norm (proj_dim)
+        .q = calloc(proj_dim, sizeof(int8_t)),
+        // per-group scale factors (proj_dim / GS)
+        .s = calloc(proj_dim / p->block_size, sizeof(float)),
+    };
 
-    s->qh.q = calloc(hidden_dim, sizeof(int8_t));
-    s->qh.s = calloc(hidden_dim / GS, sizeof(float));
+    s->qh = (Q8Tensor) {
+        .q = calloc(p->hidden_dim, sizeof(int8_t)),
+        .s = calloc(p->hidden_dim / p->block_size, sizeof(float)),
+    };
 
     // Check for allocation failures
-    if (!s->x || !s->x_rms_norm || !s->q || !s->att_scores || !s->logits || !s->k_cache
-        || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q || !s->qx.s || !s->qh.q
-        || !s->qh.s) {
-        fprintf(stderr, "state_create: allocation failed!\n");
+    if (!s->x || !s->x_rms_norm || !s->q || !s->scores || !s->logits
+        || !s->k_cache || !s->v_cache || !s->mlp_in || !s->mlp_gate || !s->qx.q
+        || !s->qx.s || !s->qh.q || !s->qh.s) {
+        fprintf(stderr, "[ForwardState] Allocation failed!\n");
         return false;
     }
 
-    size_t total_bytes = p->dim * 3 * sizeof(float) + // x, x_rms_norm
-                         proj_dim * (2 * sizeof(float) + sizeof(int8_t)) + // q, x_rms_norm, qx.q
-                         (proj_dim / GS) * sizeof(float) + // qx.s
-                         hidden_dim * (2 * sizeof(float) + sizeof(int8_t)) + // mlp, mlp_gate, qh.q
-                         (hidden_dim / GS) * sizeof(float) + // qh.s
-                         p->n_heads * p->seq_len * sizeof(float) + // att_scores
-                         p->vocab_size * sizeof(float) + // logits
-                         2 * cache_len * sizeof(float); // kv_cache
-    fprintf(stderr, "state_create: allocated %.2f MB\n", total_bytes / (1024.0 * 1024.0));
+    size_t total_bytes = p->dim * 3 * sizeof(float) +  // x, x_rms_norm
+                         proj_dim * (2 * sizeof(float) + sizeof(int8_t))
+                         +  // q, x_rms_norm, qx.q
+                         (proj_dim / p->block_size) * sizeof(float) +  // qx.s
+                         p->hidden_dim * (2 * sizeof(float) + sizeof(int8_t))
+                         +  // mlp, mlp_gate, qh.q
+                         (p->hidden_dim / p->block_size) * sizeof(float)
+                         +  // qh.s
+                         p->n_heads * p->seq_len * sizeof(float) +  // scores
+                         p->vocab_size * sizeof(float) +  // logits
+                         2 * cache_len * sizeof(float);  // kv_cache
+
+    fprintf(
+        stderr,
+        "[ForwardState] Allocated %.2f MB\n",
+        total_bytes / (1024.0 * 1024.0)
+    );
 
     return true;
 }
 
-void model_free_state(Transformer* t) {
-    if (!t) {
+void model_state_free(Model* m) {
+    if (!m) {
         return;
     }
 
-    State* s = &t->state;
+    ForwardState* s = &m->state;
     if (!s) {
         return;
     }
@@ -286,7 +379,7 @@ void model_free_state(Transformer* t) {
 
     // Attention workspace
     free(s->q);
-    free(s->att_scores);
+    free(s->scores);
     free(s->logits);
 
     // Key/value memory (shared memory with KV)
@@ -313,55 +406,55 @@ void model_free_state(Transformer* t) {
  * @section Transformer Model
  */
 
-Transformer* transformer_create(const char* path, int override_seq_len) {
+Model* model_create(const char* path, int override_seq_len) {
     if (!path) {
         return NULL;
     }
 
-    Transformer* t = calloc(1, sizeof(Transformer));
-    if (!t) {
+    Model* m = calloc(1, sizeof(Model));
+    if (!m) {
         goto malloc_failure;
     }
 
-    if (!model_read_checkpoint(t, path)) {
+    if (!model_file_mmap(m, path)) {
         goto read_failure;
     }
 
-    void* model_base = t->model; // save the pointer
-    if (!model_read_params(t, override_seq_len)) {
+    void* base = m->data;  // save the pointer
+    if (!model_params_mmap(m, override_seq_len)) {
         goto read_failure;
     }
 
-    if (!model_read_weights(t)) {
+    if (!model_weights_mmap(m)) {
         goto read_failure;
     }
 
-    if (!model_create_state(t)) {
+    if (!model_state_create(m)) {
         goto state_failure;
     }
 
     // Success: Return control flow
-    t->model = model_base; // rewind to start
-    return t;
+    m->data = base;  // rewind to start
+    return m;
 
     // Failure: Break control flow
 state_failure:
-    model_free_weights(t);
+    model_weights_free(m);
 read_failure:
-    free(t);
+    free(m);
 malloc_failure:
     return NULL;
 }
 
-void transformer_free(Transformer* t) {
-    if (!t) {
+void model_free(Model* m) {
+    if (!m) {
         return;
     }
 
-    model_free_state(t);
-    model_free_weights(t);
-    munmap(t->model, t->size);
-    free(t);
+    model_state_free(m);
+    model_weights_free(m);
+    munmap(m->data, m->size);
+    free(m);
 }
 
 /** @} */

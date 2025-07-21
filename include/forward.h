@@ -7,7 +7,7 @@
 #define QWEN_FORWARD_H
 
 #include "q8.h"
-#include "checkpoint.h"
+#include "model.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +47,9 @@ void softmax(float* x, int size);
  * Computes:
  *     out[i] = ∑_j (x.q[j] * w.q[i*n + j]) * x.s[j/GS] * w.s[(i*n + j)/GS]
  *
+ * W (d,n) @ x (n,) -> y (d,)
+ * For each output dimension i ∈ [0, d)
+ *
  * Both operands are assumed to use the same group size `GS` for quantization.
  *
  * @param out Output vector (size d, float32)
@@ -55,7 +58,7 @@ void softmax(float* x, int size);
  * @param n   Input dimension
  * @param d   Output dimension
  */
-void matmul(float* out, Q8Tensor* x, Q8Tensor* w, int n, int d);
+void matmul(float* out, Q8Tensor* x, Q8Tensor* w, int n, int d, int block_size);
 
 /**
  * @brief Applies rotary positional embeddings in-place.
@@ -118,7 +121,7 @@ void swiglu(float* x1, float* x3, int size);
  * @param l    Layer index
  * @param pos  Current sequence position
  */
-void attention(Transformer* t, int l, int pos);
+void attention(Model* m, int layer, int pos);
 
 /**
  * @brief Runs a full forward pass through the transformer.
@@ -134,7 +137,7 @@ void attention(Transformer* t, int l, int pos);
  * @param pos   Current position in the sequence
  * @return      Pointer to logits buffer (float[p->vocab_size])
  */
-float* forward(Transformer* t, int token, int pos);
+float* forward(Model* m, int token, int pos);
 
 #ifdef __cplusplus
 }

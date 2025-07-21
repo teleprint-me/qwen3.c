@@ -24,9 +24,9 @@ endif()
 option(BUILD_SHARED_LIBS "Build using shared libraries" ON)
 
 add_library(qwen3 SHARED
-    "src/q8.c"
-    "src/checkpoint.c"
     "src/tokenizer.c"
+    "src/q8.c"
+    "src/model.c"
     "src/forward.c"
 )
 target_include_directories("qwen3" PUBLIC include)
