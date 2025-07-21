@@ -4,6 +4,9 @@ project("qwen3" LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 
+# Required for clangd support in Zeditor (Zed Editor)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 set(COMMON_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -Wextra -Wpedantic -Werror -Wformat-security -Wshadow -fexceptions")
 set(DEBUG_SANITIZERS "-fsanitize=address,undefined -fno-omit-frame-pointer")
 set(DEBUG_EXTRA_WARNINGS "-Wformat -Wnull-dereference -Wdouble-promotion")
