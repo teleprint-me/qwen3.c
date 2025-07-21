@@ -156,14 +156,6 @@ int tokenizer_token_to_id(Tokenizer* t, const char* token) {
     // find a match for str in vocab, return its index or -1 if not found
     for (int i = 0; i < t->vocab_size; i++) {
         if (!t->entries[i].token) {
-            fprintf(
-                stderr,
-                "[Tokenizer] Error: Malformed entry! "
-                "i=%d, token=%s, score=%f\n",
-                (int) i,
-                (char*) t->entries[i].token,
-                (double) t->entries[i].score
-            );
             return -1;
         }
 
