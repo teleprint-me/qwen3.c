@@ -28,6 +28,8 @@ add_library(qwen3 SHARED
     "src/q8.c"
     "src/model.c"
     "src/forward.c"
+    "src/xorshift.c"
+    "src/sampler.c"
 )
 target_include_directories("qwen3" PUBLIC include)
 target_link_libraries("qwen3" PUBLIC m)
