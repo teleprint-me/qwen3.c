@@ -92,6 +92,53 @@ bool model_params_mmap(Model* m, int override_seq_len) {
 }
 
 /**
+ * @section Model Tensors
+ * @{
+ */
+
+/**
+ * Parses an array of Q8_0 quantized tensors from flat memory.
+ *
+ * Each tensor is stored as:
+ *   - [int8_t[size]]: flattened weight
+ *   - [float[size / GS]]: scale factors (1 per block)
+ *
+ * The input `*X` is expected to point to the start of this data.
+ * On return, `*X` will be advanced past the parsed region.
+ *
+ * @param b Pointer to raw memory buffer (usually mapped model)
+ * @param n Number of tensors to parse
+ * @param size Number of int8_t elements in each tensor (must be divisible by
+ * GS)
+ * @return Q8Tensor array with n entries (caller must free)
+ */
+Q8Tensor* q8_tensor_mmap(Model* m, int tensors, int integers, int block_size) {
+    if (!m || !m->data || tensors <= 0 || integers <= 0 || block_size <= 0) {
+        return NULL;
+    }
+
+    Q8Tensor* qt = calloc(tensors, sizeof(Q8Tensor));
+    if (!qt) {
+        return NULL;
+    }
+
+    // Buffer must be read linearly
+    for (int i = 0; i < tensors; i++) {
+        // map q8 values
+        qt[i].q = (int8_t*) m->data;
+        m->data = (int8_t*) m->data + integers;
+
+        // map scalars
+        qt[i].s = (float*) m->data;
+        m->data = (float*) m->data + integers / block_size;
+    }
+
+    return qt;
+}
+
+/** @} */
+
+/**
  * @section Model Weights
  */
 
@@ -144,7 +191,7 @@ bool model_weights_mmap(Model* m) {
     m->data = (void*) weights;
 
     // Token embeddings (quantized + dequantized; allocates internally)
-    w->qe = q8_tensor_mmap(&m->data, 1, p->vocab_size * p->dim, p->block_size);
+    w->qe = q8_tensor_mmap(m, 1, p->vocab_size * p->dim, p->block_size);
     // explicit malloc (must be freed)
     w->fe = calloc(p->vocab_size * p->dim, sizeof(float));
     if (!w->fe) {
@@ -161,18 +208,10 @@ bool model_weights_mmap(Model* m) {
     const int proj_dim = p->n_heads * p->head_dim;
     const int kv_dim = p->n_kv_heads * p->head_dim;
 
-    w->wq = q8_tensor_mmap(
-        &m->data, p->n_layers, p->dim * proj_dim, p->block_size
-    );
-    w->wk = q8_tensor_mmap(
-        &m->data, p->n_layers, p->dim * kv_dim, p->block_size
-    );
-    w->wv = q8_tensor_mmap(
-        &m->data, p->n_layers, p->dim * kv_dim, p->block_size
-    );
-    w->wo = q8_tensor_mmap(
-        &m->data, p->n_layers, proj_dim * p->dim, p->block_size
-    );
+    w->wq = q8_tensor_mmap(m, p->n_layers, p->dim * proj_dim, p->block_size);
+    w->wk = q8_tensor_mmap(m, p->n_layers, p->dim * kv_dim, p->block_size);
+    w->wv = q8_tensor_mmap(m, p->n_layers, p->dim * kv_dim, p->block_size);
+    w->wo = q8_tensor_mmap(m, p->n_layers, proj_dim * p->dim, p->block_size);
 
     /**
      * Feed-forward weights
@@ -181,13 +220,13 @@ bool model_weights_mmap(Model* m) {
     const int hidden_dim = p->hidden_dim;
 
     w->w1 = q8_tensor_mmap(
-        &m->data, p->n_layers, p->dim * hidden_dim, p->block_size
+        m, p->n_layers, p->dim * hidden_dim, p->block_size
     );  // w1(x)
     w->w2 = q8_tensor_mmap(
-        &m->data, p->n_layers, hidden_dim * p->dim, p->block_size
+        m, p->n_layers, hidden_dim * p->dim, p->block_size
     );  // w2(silu ⊙ w3(x))
     w->w3 = q8_tensor_mmap(
-        &m->data, p->n_layers, p->dim * hidden_dim, p->block_size
+        m, p->n_layers, p->dim * hidden_dim, p->block_size
     );  // w3(x)
 
     /**
@@ -197,9 +236,7 @@ bool model_weights_mmap(Model* m) {
      */
     w->cls = p->shared_classifier
                  ? w->qe
-                 : q8_tensor_mmap(
-                       &m->data, 1, p->dim * p->vocab_size, p->block_size
-                   );
+                 : q8_tensor_mmap(m, 1, p->dim * p->vocab_size, p->block_size);
 
     size_t total_bytes =
         // FP32 weights

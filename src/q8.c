@@ -1,7 +1,6 @@
 /// @file src/q8.c
 #include "q8.h"
 #include <math.h>
-#include <stdlib.h>
 
 void q8_quantize(Q8Tensor* qt, float* x, int n, int block_size) {
     const int num_groups = n / block_size;
@@ -35,30 +34,4 @@ void q8_dequantize(Q8Tensor* qt, float* x, int n, int block_size) {
     for (int i = 0; i < n; i++) {
         x[i] = qt->q[i] * qt->s[i / block_size];
     }
-}
-
-Q8Tensor* q8_tensor_mmap(void** buffer, int n, int n_int8, int block_size) {
-    if (!buffer || n <= 0 || n_int8 <= 0) {
-        return NULL;
-    }
-
-    void* cursor = *buffer;
-    Q8Tensor* qt = calloc(n, sizeof(Q8Tensor));
-    if (!qt) {
-        return NULL;
-    }
-
-    // Buffer must be read linearly
-    for (int i = 0; i < n; i++) {
-        // map q8 values
-        qt[i].q = (int8_t*) cursor;
-        cursor = (int8_t*) cursor + n_int8;
-
-        // map scalars
-        qt[i].s = (float*) cursor;
-        cursor = (float*) cursor + n_int8 / block_size;
-    }
-
-    *buffer = cursor;
-    return qt;
 }
