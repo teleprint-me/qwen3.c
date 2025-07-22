@@ -32,7 +32,7 @@ bool model_file_mmap(Model* m, const char* path) {
     }
 
     m->data = mmap(NULL, m->size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
-    if (!m->data) {
+    if (!m->data || m->data == MAP_FAILED) {
         goto read_failure;
     }
 
@@ -66,7 +66,12 @@ bool model_params_mmap(Model* m, int override_seq_len) {
         return false;
     }
 
-    if (override_seq_len && override_seq_len <= m->params.seq_len) {
+    assert(
+        m->params.block_size % 2
+        && "[Params] block_size must be evenly divisible."
+    );
+
+    if (override_seq_len > 0 && override_seq_len <= m->params.seq_len) {
         m->params.seq_len = override_seq_len;
     }
 
