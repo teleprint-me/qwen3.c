@@ -52,7 +52,7 @@ typedef struct Options {
     char* system_prompt;  // optional (used in chat completions)
     char* path;  // required (e.g., model.bin)
     char* mode;  // "completion" or "chat"
-    unsigned long long seed;  // seed rng with time by default
+    uint64_t seed;  // seed rng with time by default
     Thinking thinking;  // 1 enables thinking
     int seq_len;  // max context length
     float temperature;  // 0.0f = deterministic and 1.0f = creative
@@ -67,7 +67,7 @@ Options options_init(void) {
         .system_prompt = NULL,
         .path = NULL,
         .mode = "chat",
-        .seed = (unsigned long long) time(NULL),
+        .seed = (uint64_t) time(NULL),
         .thinking = THINKING_OFF,
         .temperature = 1.0f,
         .top_p = 0.9f,
@@ -118,7 +118,7 @@ int options_parse(Options* o, int argc, char** argv) {
             case 's': {
                 int seed = abs(atoi(arg));
                 if (seed) {
-                    o->seed = (unsigned long long) seed;
+                    o->seed = (uint64_t) seed;
                 }
             } break;
             case 'c': {
